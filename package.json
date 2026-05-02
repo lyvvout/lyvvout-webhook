@@ -1,0 +1,17 @@
+{
+  "name": "lyvvout-webhook",
+  "version": "1.0.0",
+  "description": "Stripe and Bland AI webhook for LyvvOut",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "stripe": "^14.25.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
