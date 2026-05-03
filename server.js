@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
@@ -18,6 +19,11 @@ const PAYMENT_LINKS = {
     price: "25",
     seconds: 900,
   },
+"https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
+  sessionLength: "15",
+  price: "25",
+  seconds: 900,
+},
   "https://buy.stripe.com/3clbJ20CH8Yedh29vb3Ru01": {
     sessionLength: "30",
     price: "49",
@@ -51,8 +57,9 @@ app.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
-        process.env.STRIPE_WEBHOOK_SECRET
+        process.env.STRIPE_WEBHOOK_SECRET.trim()
       );
+      console.log("Webhook verified");
     } catch (err) {
       console.error("Stripe webhook verification failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
