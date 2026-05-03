@@ -31,7 +31,7 @@ const PAYMENT_LINKS = {
   price: "25",
   seconds: 900,
 },
-  "https://buy.stripe.com/3clbJ20CH8Yedh29vb3Ru01": {
+  "https://buy.stripe.com/3cIbJ20CH8Yedh29vb3Ru01": {
     sessionLength: "30",
     price: "49",
     seconds: 1800,
@@ -107,7 +107,7 @@ app.post(
         const amount = session.amount_total;
 
         if (amount === 2500) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
-        if (amount === 4900) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/3clbJ20CH8Yedh29vb3Ru01"];
+        if (amount === 4900) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/3cIbJ20CH8Yedh29vb3Ru01"];
         if (amount === 9900) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/fZu7sM5X1eiyel622J3Ru02"];
         if (amount === 2000) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/5kQaEY859caq6SEbDj3Ru03"];
       }
@@ -195,7 +195,7 @@ app.post('/send-payment-sms', async (req, res) => {
       message = 'LyvvOut: Here is your secure payment link for your Quick Break 15 minute session: https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
     } 
     else if (session_length === 30) {
-      message = 'LyvvOut: Here is your secure payment link for your Standard Session 30 minute session: https://buy.stripe.com/3clbJ20CH8Yedh29vb3Ru01 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
+      message = 'LyvvOut: Here is your secure payment link for your Standard Session 30 minute session: https://buy.stripe.com/3cIbJ20CH8Yedh29vb3Ru01 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
     } 
     else if (session_length === 60) {
       message = 'LyvvOut: Here is your secure payment link for your Deep Session 60 minute session: https://buy.stripe.com/fZu7sM5X1eiyel622J3Ru02 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
