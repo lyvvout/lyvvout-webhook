@@ -3,6 +3,13 @@ const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
 
+const twilio = require('twilio');
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
 const app = express();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -176,6 +183,39 @@ app.post("/bland/check-payment", async (req, res) => {
     upsell: payment.plan?.upsell || false,
     stripe_session_id: payment.stripeSessionId,
   });
+});
+
+app.post('/send-payment-sms', async (req, res) => {
+  try {
+    const { phone_number, session_length } = req.body;
+
+    let message = '';
+
+    if (session_length === 15) {
+      message = 'LyvvOut: Here is your secure payment link for your Quick Break 15 minute session: https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
+    } 
+    else if (session_length === 30) {
+      message = 'LyvvOut: Here is your secure payment link for your Standard Session 30 minute session: https://buy.stripe.com/3clbJ20CH8Yedh29vb3Ru01 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
+    } 
+    else if (session_length === 60) {
+      message = 'LyvvOut: Here is your secure payment link for your Deep Session 60 minute session: https://buy.stripe.com/fZu7sM5X1eiyel622J3Ru02 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
+    } 
+    else {
+      return res.status(400).json({ error: 'Invalid session length' });
+    }
+
+    const sms = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: phone_number
+    });
+
+    res.json({ success: true, sid: sms.sid });
+
+  } catch (error) {
+    console.error('SMS ERROR:', error);
+    res.status(500).json({ error: 'Failed to send SMS' });
+  }
 });
 
 app.listen(PORT, () => {
