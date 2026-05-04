@@ -364,6 +364,61 @@ app.post("/bland/session-status", async (req, res) => {
   });
 });
 
+app.post("/twilio/incoming-live-call", async (req, res) => {
+  console.log("LIVE CALL INCOMING:", req.body);
+
+  const twilio = require("twilio");
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const from = normalizePhone(req.body.From);
+  const callSid = req.body.CallSid;
+
+  const payment =
+    payments.get(from) ||
+    [...payments.values()].find(
+      (p) => p.paid === true && normalizePhone(p.customerPhone) === from
+    );
+
+  if (!payment) {
+    response.say(
+      "We could not find an active paid session for this call. Please return to the main intake line."
+    );
+    response.hangup();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  payment.liveCallSid = callSid;
+  payment.liveSessionStartedAt = new Date().toISOString();
+  payment.liveSessionActive = true;
+
+  console.log("LIVE SESSION STARTED:", {
+    from,
+    callSid,
+    sessionSeconds: payment.totalSessionSeconds,
+  });
+
+  response.say("Connecting you to a live listener now. Please hold.");
+
+  // TEMPORARY: keep caller held until we connect Flex routing next
+  response.pause({ length: 2 });
+  response.say("Your live listener routing is being prepared. Please try again shortly.");
+  response.hangup();
+
+  res.type("text/xml");
+  return res.send(response.toString());
+});
+
 app.post('/send-payment-sms', async (req, res) => {
   try {
     const { phone_number, session_length } = req.body;
