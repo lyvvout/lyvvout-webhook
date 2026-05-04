@@ -534,6 +534,7 @@ function getLiveRemainingSeconds(payment) {
   const now = Date.now();
 
   return Math.max(0, Math.ceil((endsAt - now) / 1000));
+
 }
 
 function scheduleLiveSessionTimers(payment) {
@@ -543,13 +544,140 @@ function scheduleLiveSessionTimers(payment) {
   if (!payment.liveSessionEndsAt) return;
   if (payment.sessionComplete === true) return;
 
-  console.log("LIVE SESSION TIMERS READY:", {
+  const now = Date.now();
+  const endAt = new Date(payment.liveSessionEndsAt).getTime();
+
+  const fiveMinuteAt = endAt - 5 * 60 * 1000;
+  const twoMinuteAt = endAt - 2 * 60 * 1000;
+  const wrapUpAt = endAt - 30 * 1000;
+
+  console.log("LIVE SESSION TIMERS SCHEDULED:", {
     sessionId: payment.sessionId,
     liveCallSid: payment.liveCallSid,
     remainingSeconds: getLiveRemainingSeconds(payment),
-    liveSessionEndsAt: payment.liveSessionEndsAt
+    liveSessionEndsAt: payment.liveSessionEndsAt,
+    fiveMinuteInSeconds: Math.max(0, Math.ceil((fiveMinuteAt - now) / 1000)),
+    twoMinuteInSeconds: Math.max(0, Math.ceil((twoMinuteAt - now) / 1000)),
+    wrapUpInSeconds: Math.max(0, Math.ceil((wrapUpAt - now) / 1000)),
+    endInSeconds: Math.max(0, Math.ceil((endAt - now) / 1000))
   });
 
+  if (fiveMinuteAt > now && payment.fiveMinuteWarningSent !== true) {
+    setTimeout(() => {
+      fireLiveSessionPrompt(payment.sessionId, "five_minute_upsell");
+    }, fiveMinuteAt - now);
+  }
+
+  if (twoMinuteAt > now && payment.twoMinuteWarningSent !== true) {
+    setTimeout(() => {
+      fireLiveSessionPrompt(payment.sessionId, "two_minute_warning");
+    }, twoMinuteAt - now);
+  }
+
+  if (wrapUpAt > now && payment.wrapUpSent !== true) {
+    setTimeout(() => {
+      fireLiveSessionPrompt(payment.sessionId, "thirty_second_wrap_up");
+    }, wrapUpAt - now);
+  }
+
+  if (endAt > now) {
+    setTimeout(() => {
+      endLiveSessionCall(payment.sessionId, "paid_time_expired");
+    }, endAt - now);
+  }
+}
+
+function fireLiveSessionPrompt(sessionId, promptType) {
+  const payment = findPaymentForFlexStart({ sessionId });
+
+  if (!payment) return;
+  if (payment.sessionComplete === true) return;
+
+  if (promptType === "five_minute_upsell") {
+    if (payment.fiveMinuteWarningSent === true) return;
+
+    payment.fiveMinuteWarningSent = true;
+    payment.upsellOfferActive = true;
+    payment.upsellPaymentPending = false;
+    payment.upsellPaymentComplete = false;
+
+    payment.currentPrompt = "5-MINUTE UPSELL";
+    payment.currentPromptScript =
+      "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes?";
+  }
+
+  if (promptType === "two_minute_warning") {
+    if (payment.twoMinuteWarningSent === true) return;
+
+    payment.twoMinuteWarningSent = true;
+    payment.upsellOfferActive = false;
+
+    payment.currentPrompt = "2-MINUTE WARNING";
+    payment.currentPromptScript =
+      "You have about two minutes remaining, so we are going to begin gently wrapping up your session.";
+  }
+
+  if (promptType === "thirty_second_wrap_up") {
+    if (payment.wrapUpSent === true) return;
+
+    payment.wrapUpSent = true;
+    payment.upsellOfferActive = false;
+
+    payment.currentPrompt = "30-SECOND WRAP-UP";
+    payment.currentPromptScript =
+      "We are at the end of your session, so I am going to leave you with one final thought before the call closes.";
+  }
+
+  payment.lastPromptType = promptType;
+  payment.lastPromptAt = new Date().toISOString();
+  payment.updatedAt = new Date().toISOString();
+
+  console.log("LIVE SESSION PROMPT FIRED:", {
+    sessionId: payment.sessionId,
+    promptType,
+    currentPrompt: payment.currentPrompt,
+    remainingSeconds: getLiveRemainingSeconds(payment)
+  });
+}
+
+async function endLiveSessionCall(sessionId, reason) {
+  const payment = findPaymentForFlexStart({ sessionId });
+
+  if (!payment) return;
+  if (payment.sessionComplete === true) return;
+
+  payment.sessionComplete = true;
+  payment.liveSessionActive = false;
+  payment.currentPrompt = "SESSION COMPLETE";
+  payment.currentPromptScript = "The paid session time has ended.";
+  payment.completedReason = reason;
+  payment.completedAt = new Date().toISOString();
+  payment.updatedAt = new Date().toISOString();
+
+  console.log("LIVE SESSION ENDING:", {
+    sessionId: payment.sessionId,
+    liveCallSid: payment.liveCallSid,
+    reason
+  });
+
+  if (!payment.liveCallSid) {
+    console.log("No liveCallSid found. Cannot end Twilio call.");
+    return;
+  }
+
+  try {
+   await twilioClient.calls(payment.liveCallSid).update({
+      status: "completed"
+    });
+
+    console.log("TWILIO LIVE CALL ENDED:", {
+      sessionId: payment.sessionId,
+      liveCallSid: payment.liveCallSid,
+      reason
+    });
+  } catch (error) {
+    console.error("FAILED TO END TWILIO LIVE CALL:", error.message);
+  }
 }
 
 app.post('/send-payment-sms', async (req, res) => {
