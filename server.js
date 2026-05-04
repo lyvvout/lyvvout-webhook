@@ -150,6 +150,8 @@ app.get("/health", (req, res) => {
 
 // Bland AI calls this after caller presses 1.
 app.post("/bland/check-payment", async (req, res) => {
+  console.log("CHECK PAYMENT REQUEST BODY:", req.body);
+  
   const callId =
     req.body.call_id ||
     req.body.callId ||
