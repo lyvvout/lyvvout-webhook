@@ -508,6 +508,71 @@ app.post("/flex/start-live-session", (req, res) => {
   });
 });
 
+app.get("/flex/session/:sessionId", (req, res) => {
+  const { sessionId } = req.params;
+
+  const payment = findPaymentForFlexStart({ sessionId });
+
+  if (!payment) {
+    return res.status(404).json({
+      ok: false,
+      error: "No matching session found"
+    });
+  }
+
+  return res.json({
+    ok: true,
+
+    sessionId: payment.sessionId,
+
+    callerName: payment.callerName || "Caller",
+    callerPhone: payment.customerPhone || payment.phone || "",
+
+    sessionType: payment.sessionType || "",
+    sessionLabel: payment.sessionLabel || "",
+    sessionLengthMinutes: payment.sessionLengthMinutes || null,
+
+    paymentStatus: payment.paymentStatus || (payment.paid ? "paid" : "unpaid"),
+    paid: payment.paid === true,
+
+    intakeSummary: payment.intakeSummary || "",
+    callerNeed: payment.callerNeed || "",
+    callerMood: payment.callerMood || "",
+    preferredTone: payment.preferredTone || "",
+    listenerInstructions: payment.listenerInstructions || "",
+
+    liveQueuedAt: payment.liveQueuedAt || null,
+    timerStarted: payment.timerStarted === true,
+    liveSessionActive: payment.liveSessionActive === true,
+    liveSessionStartedAt: payment.liveSessionStartedAt || null,
+    liveSessionEndsAt: payment.liveSessionEndsAt || null,
+
+    totalSessionSeconds: payment.totalSessionSeconds || 0,
+    remainingSeconds: getLiveRemainingSeconds(payment),
+
+    fiveMinuteWarningSent: payment.fiveMinuteWarningSent === true,
+    twoMinuteWarningSent: payment.twoMinuteWarningSent === true,
+    wrapUpSent: payment.wrapUpSent === true,
+
+    currentPrompt: payment.currentPrompt || "",
+    currentPromptScript: payment.currentPromptScript || "",
+
+    upsellOfferActive: payment.upsellOfferActive === true,
+    upsellPaymentPending: payment.upsellPaymentPending === true,
+    upsellPaymentComplete: payment.upsellPaymentComplete === true,
+
+    lastPromptType: payment.lastPromptType || null,
+    lastPromptAt: payment.lastPromptAt || null,
+
+    listenerName: payment.listenerName || null,
+    listenerWorkerSid: payment.listenerWorkerSid || null,
+
+    sessionComplete: payment.sessionComplete === true,
+    completedReason: payment.completedReason || null,
+    completedAt: payment.completedAt || null
+  });
+});
+
 function findPaymentForFlexStart({ sessionId, liveCallSid }) {
   const allPayments =
     payments instanceof Map ? Array.from(payments.values()) : payments;
