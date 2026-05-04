@@ -398,15 +398,17 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     return res.send(response.toString());
   }
 
-  payment.liveCallSid = callSid;
-  payment.liveSessionStartedAt = new Date().toISOString();
-  payment.liveSessionActive = true;
+payment.liveCallSid = callSid;
+payment.liveQueuedAt = new Date().toISOString();
+payment.liveSessionStartedAt = null;
+payment.liveSessionActive = false;
+payment.timerStarted = false;
 
-  console.log("LIVE SESSION STARTED:", {
-    from,
-    callSid,
-    sessionSeconds: payment.totalSessionSeconds,
-  });
+console.log("LIVE SESSION QUEUED:", {
+  from,
+  callSid,
+  sessionSeconds: payment.totalSessionSeconds,
+});
 
   response.say("Connecting you to a live listener now. Please hold.");
 
@@ -418,6 +420,137 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
   res.type("text/xml");
   return res.send(response.toString());
 });
+
+app.post("/flex/start-live-session", (req, res) => {
+  const {
+    sessionId,
+    liveCallSid,
+    flexTaskSid,
+    listenerName,
+    listenerWorkerSid
+  } = req.body;
+
+  const payment = findPaymentForFlexStart({
+    sessionId,
+    liveCallSid
+  });
+
+  if (!payment) {
+    return res.status(404).json({
+      ok: false,
+      error: "No matching live session found"
+    });
+  }
+
+  if (payment.sessionComplete === true) {
+    return res.status(400).json({
+      ok: false,
+      error: "Session is already complete"
+    });
+  }
+
+  payment.flexTaskSid = flexTaskSid || payment.flexTaskSid || null;
+  payment.listenerName = listenerName || payment.listenerName || null;
+  payment.listenerWorkerSid = listenerWorkerSid || payment.listenerWorkerSid || null;
+
+  if (payment.timerStarted === true) {
+    return res.json({
+      ok: true,
+      message: "Timer already started",
+      liveSessionStartedAt: payment.liveSessionStartedAt,
+      liveSessionEndsAt: payment.liveSessionEndsAt,
+      remainingSeconds: getLiveRemainingSeconds(payment)
+    });
+  }
+
+  const now = new Date();
+
+  payment.timerStarted = true;
+  payment.liveSessionActive = true;
+  payment.liveSessionStartedAt = now.toISOString();
+  payment.liveSessionEndsAt = new Date(
+    now.getTime() + payment.totalSessionSeconds * 1000
+  ).toISOString();
+
+  payment.currentPrompt = "LIVE SESSION STARTED";
+  payment.currentPromptScript =
+    "The live listener has accepted the call. Paid session time has started.";
+
+  payment.updatedAt = new Date().toISOString();
+
+  console.log("LIVE LISTENER ACCEPTED - TIMER STARTED:", {
+    sessionId: payment.sessionId,
+    liveCallSid: payment.liveCallSid,
+    flexTaskSid: payment.flexTaskSid,
+    listenerName: payment.listenerName,
+    sessionSeconds: payment.totalSessionSeconds,
+    liveSessionStartedAt: payment.liveSessionStartedAt,
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
+
+  scheduleLiveSessionTimers(payment);
+
+  return res.json({
+    ok: true,
+    message: "Live session timer started",
+    sessionId: payment.sessionId,
+    callerName: payment.callerName,
+    callerPhone: payment.customerPhone || payment.phone,
+    sessionType: payment.sessionType,
+    sessionLabel: payment.sessionLabel,
+    sessionLengthMinutes: payment.sessionLengthMinutes,
+    totalSessionSeconds: payment.totalSessionSeconds,
+    liveSessionStartedAt: payment.liveSessionStartedAt,
+    liveSessionEndsAt: payment.liveSessionEndsAt,
+    remainingSeconds: getLiveRemainingSeconds(payment),
+    currentPrompt: payment.currentPrompt,
+    currentPromptScript: payment.currentPromptScript
+  });
+});
+
+function findPaymentForFlexStart({ sessionId, liveCallSid }) {
+  const allPayments =
+    payments instanceof Map ? Array.from(payments.values()) : payments;
+
+  return allPayments.find(payment => {
+    const sessionMatches =
+      sessionId && payment.sessionId === sessionId;
+
+    const callMatches =
+      liveCallSid && payment.liveCallSid === liveCallSid;
+
+    return sessionMatches || callMatches;
+  });
+}
+
+function getLiveRemainingSeconds(payment) {
+  if (!payment) return 0;
+
+  if (!payment.timerStarted || !payment.liveSessionEndsAt) {
+    return payment.totalSessionSeconds || 0;
+  }
+
+  const endsAt = new Date(payment.liveSessionEndsAt).getTime();
+  const now = Date.now();
+
+  return Math.max(0, Math.ceil((endsAt - now) / 1000));
+}
+
+function scheduleLiveSessionTimers(payment) {
+  if (!payment) return;
+  if (!payment.sessionId) return;
+  if (!payment.timerStarted) return;
+  if (!payment.liveSessionEndsAt) return;
+  if (payment.sessionComplete === true) return;
+
+  console.log("LIVE SESSION TIMERS READY:", {
+    sessionId: payment.sessionId,
+    liveCallSid: payment.liveCallSid,
+    remainingSeconds: getLiveRemainingSeconds(payment),
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
+
+}
 
 app.post('/send-payment-sms', async (req, res) => {
   try {
