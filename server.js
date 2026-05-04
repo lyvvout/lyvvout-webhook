@@ -249,6 +249,121 @@ app.post("/bland/check-payment", async (req, res) => {
   });
 });
 
+app.post("/bland/session-status", async (req, res) => {
+  console.log("SESSION STATUS REQUEST BODY:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+
+  const callId =
+    req.body.call_id ||
+    req.body.callId ||
+    req.body.client_reference_id ||
+    "";
+
+  const normalizedCallId = normalizePhone(callId);
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    payments.get(normalizedCallId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          p.callId === callId ||
+          normalizePhone(p.callId) === normalizedCallId ||
+          normalizePhone(p.callId) === phone
+        )
+      );
+    });
+
+  if (!payment || payment.paid !== true) {
+    return res.json({
+      active: false,
+      paid: false,
+      remaining_seconds: 0,
+      five_minute_warning_due: false,
+      two_minute_warning_due: false,
+      wrap_up_due: false,
+      session_complete: false,
+      message: "No active paid session found.",
+    });
+  }
+
+  const now = Date.now();
+  const startedAt = new Date(payment.sessionStartedAt || payment.paidAt).getTime();
+  const totalSessionSeconds =
+    payment.totalSessionSeconds ||
+    payment.sessionSeconds ||
+    payment.plan?.seconds ||
+    900;
+
+  const elapsedSeconds = Math.floor((now - startedAt) / 1000);
+  const remainingSeconds = Math.max(totalSessionSeconds - elapsedSeconds, 0);
+
+  const fiveMinuteWarningDue =
+    remainingSeconds <= 300 &&
+    remainingSeconds > 120 &&
+    payment.fiveMinuteWarningSent !== true;
+
+  const twoMinuteWarningDue =
+    remainingSeconds <= 120 &&
+    remainingSeconds > 30 &&
+    payment.twoMinuteWarningSent !== true;
+
+  const wrapUpDue =
+    remainingSeconds <= 30 &&
+    remainingSeconds > 0 &&
+    payment.wrapUpSent !== true;
+
+  const sessionComplete = remainingSeconds <= 0;
+
+  if (fiveMinuteWarningDue) payment.fiveMinuteWarningSent = true;
+  if (twoMinuteWarningDue) payment.twoMinuteWarningSent = true;
+  if (wrapUpDue) payment.wrapUpSent = true;
+  if (sessionComplete) payment.sessionComplete = true;
+
+  console.log("SESSION STATUS RESULT:", {
+    callId,
+    phone,
+    elapsedSeconds,
+    remainingSeconds,
+    totalSessionSeconds,
+    fiveMinuteWarningDue,
+    twoMinuteWarningDue,
+    wrapUpDue,
+    sessionComplete,
+  });
+
+  return res.json({
+    active: !sessionComplete,
+    paid: true,
+    call_id: payment.callId || callId || null,
+    remaining_seconds: remainingSeconds,
+    elapsed_seconds: elapsedSeconds,
+    total_session_seconds: totalSessionSeconds,
+    five_minute_warning_due: fiveMinuteWarningDue,
+    two_minute_warning_due: twoMinuteWarningDue,
+    wrap_up_due: wrapUpDue,
+    session_complete: sessionComplete,
+    upsell_available: payment.plan?.upsell !== true,
+    message: sessionComplete
+      ? "Session complete."
+      : "Session is active.",
+  });
+});
+
 app.post('/send-payment-sms', async (req, res) => {
   try {
     const { phone_number, session_length } = req.body;
