@@ -112,18 +112,46 @@ app.post(
         if (amount === 2000) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/5kQaEY859caq6SEbDj3Ru03"];
       }
 
-      payments.set(callId, {
-        paid: true,
-        callId,
-        stripeSessionId: session.id,
-        customerPhone: session.customer_details?.phone || null,
-        customerEmail: session.customer_details?.email || null,
-        amountTotal: session.amount_total,
-        currency: session.currency,
-        paymentStatus: session.payment_status,
-        plan: matchedPlan,
-        paidAt: new Date().toISOString(),
-      });
+      const now = new Date();
+
+const sessionSeconds =
+  matchedPlan?.seconds ||
+  Number(session.metadata?.seconds) ||
+  900;
+
+const isUpsell = matchedPlan?.upsell === true || session.metadata?.upsell === "true";
+
+const paymentRecord = {
+  paid: true,
+  callId,
+  stripeSessionId: session.id,
+  customerPhone: session.customer_details?.phone || null,
+  customerEmail: session.customer_details?.email || null,
+  amountTotal: session.amount_total,
+  currency: session.currency,
+  paymentStatus: session.payment_status,
+  plan: matchedPlan,
+  paidAt: now.toISOString(),
+
+  // SESSION TIMER FIELDS
+  sessionStartedAt: now.toISOString(),
+  sessionSeconds,
+  upsellSecondsAdded: isUpsell ? 900 : 0,
+  totalSessionSeconds: sessionSeconds + (isUpsell ? 900 : 0),
+
+  fiveMinuteWarningSent: false,
+  twoMinuteWarningSent: false,
+  wrapUpSent: false,
+  sessionComplete: false,
+};
+
+payments.set(callId, paymentRecord);
+
+if (paymentRecord.customerPhone) {
+  payments.set(paymentRecord.customerPhone, paymentRecord);
+}
+
+console.log("Payment confirmed:", paymentRecord);
 
       console.log("Payment confirmed:", payments.get(callId));
     }
