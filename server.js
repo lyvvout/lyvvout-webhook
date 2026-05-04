@@ -422,15 +422,13 @@ console.log("LIVE SESSION QUEUED:", {
   sessionSeconds: payment.totalSessionSeconds,
 });
 
-  response.say("Connecting you to a live listener now. Please hold.");
+response.redirect(
+  { method: "POST" },
+  `https://webhooks.twilio.com/v1/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Flows/FW8520122a6851630c570483753b160ac6`
+);
 
-  // TEMPORARY: keep caller held until we connect Flex routing next
-  response.pause({ length: 2 });
-  response.say("Your live listener routing is being prepared. Please try again shortly.");
-  response.hangup();
-
-  res.type("text/xml");
-  return res.send(response.toString());
+res.type("text/xml");
+return res.send(response.toString());
 });
 
 app.post("/flex/start-live-session", (req, res) => {
