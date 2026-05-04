@@ -151,26 +151,58 @@ app.get("/health", (req, res) => {
 // Bland AI calls this after caller presses 1.
 app.post("/bland/check-payment", async (req, res) => {
   console.log("CHECK PAYMENT REQUEST BODY:", req.body);
-  
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+
   const callId =
     req.body.call_id ||
     req.body.callId ||
     req.body.client_reference_id ||
-    req.body.phone ||
-    req.body.from;
+    "";
 
-  if (!callId) {
-    return res.status(400).json({
-      paid: false,
-      message: "Missing call_id or phone reference.",
+  const normalizedCallId = normalizePhone(callId);
+
+  console.log("NORMALIZED CHECK VALUES:", {
+    rawPhone,
+    phone,
+    callId,
+    normalizedCallId,
+  });
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    payments.get(normalizedCallId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          p.callId === callId ||
+          normalizePhone(p.callId) === normalizedCallId ||
+          normalizePhone(p.callId) === phone
+        )
+      );
     });
-  }
 
-  const payment = payments.get(callId);
+  console.log("PAYMENT LOOKUP RESULT:", payment || "NO PAYMENT FOUND");
 
-  if (!payment || !payment.paid) {
+  if (!payment || payment.paid !== true) {
     return res.json({
       paid: false,
+      paymentStatus: "not_found",
       message:
         "Payment has not been confirmed yet. Ask the caller to complete payment and press 1 again.",
     });
@@ -178,12 +210,14 @@ app.post("/bland/check-payment", async (req, res) => {
 
   return res.json({
     paid: true,
+    paymentStatus: "paid",
     message: "Payment confirmed. Continue the call.",
-    call_id: callId,
-    session_length: payment.plan?.sessionLength,
-    session_seconds: payment.plan?.seconds,
+    call_id: payment.callId || callId || null,
+    customerPhone: payment.customerPhone || payment.phone || phone,
+    session_length: payment.plan?.sessionLength || null,
+    session_seconds: payment.plan?.seconds || null,
     upsell: payment.plan?.upsell || false,
-    stripe_session_id: payment.stripeSessionId,
+    stripe_session_id: payment.stripeSessionId || null,
   });
 });
 
