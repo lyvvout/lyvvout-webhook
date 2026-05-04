@@ -154,15 +154,15 @@ if (paymentRecord.customerPhone) {
   payments.set(paymentRecord.customerPhone, paymentRecord);
 }
 
+if (paymentRecord.callId) {
+  payments.set(paymentRecord.callId, paymentRecord);
+}
+
 console.log("Payment confirmed:", paymentRecord);
 
-      console.log("Payment confirmed:", payments.get(callId));
-    }
-
-    res.json({ received: true });
-  }
-);
-
+res.json({ received: true });
+}
+});
 // JSON routes after Stripe raw webhook
 app.use(express.json());
 
@@ -382,14 +382,23 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     return String(value).trim();
   };
 
-  const from = normalizePhone(req.body.From);
-  const callSid = req.body.CallSid;
+ const from = normalizePhone(req.body.From);
+const callSid = req.body.CallSid;
 
-  const payment =
-    payments.get(from) ||
-    [...payments.values()].find(
-      (p) => p.paid === true && normalizePhone(p.customerPhone) === from
+const payment =
+  payments.get(from) ||
+  payments.get(callSid) ||
+  [...payments.values()].find((p) => {
+    return (
+      p.paid === true &&
+      (
+        normalizePhone(p.customerPhone) === from ||
+        normalizePhone(p.phone) === from ||
+        p.callId === callSid ||
+        normalizePhone(p.callId) === from
+      )
     );
+  });
 
   if (!payment) {
     response.say(
