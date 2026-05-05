@@ -381,73 +381,100 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     return String(value).trim();
   };
 
- const from = normalizePhone(req.body.From);
-const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From || req.body.caller_number || "");
+  const callSid = req.body.CallSid || "";
 
-const payment =
-  payments.get(from) ||
-  payments.get(callSid) ||
-  [...payments.values()].find((p) => {
-    return (
-      p.paid === true &&
-      (
-        normalizePhone(p.customerPhone) === from ||
-        normalizePhone(p.phone) === from ||
-        p.callId === callSid ||
-        normalizePhone(p.callId) === from
-      )
-    );
-  });
+  const payment =
+    payments.get(from) ||
+    payments.get(callSid) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === from ||
+          normalizePhone(p.phone) === from ||
+          p.callId === callSid ||
+          normalizePhone(p.callId) === from
+        )
+      );
+    });
 
   if (!payment) {
     response.say(
       "We could not find an active paid session for this call. Please return to the main intake line."
     );
     response.hangup();
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
 
-res.type("text/xml");
-return res.send(response.toString());
-}
+  payment.liveCallSid = callSid;
+  payment.liveQueuedAt = new Date().toISOString();
 
-payment.liveCallSid = callSid;
-payment.liveQueuedAt = new Date().toISOString();
-payment.liveSessionStartedAt = null;
-payment.liveSessionActive = false;
-payment.timerStarted = false;
+  console.log("QUEUING CALL INTO FLEX:", { from, callSid });
 
-console.log("LIVE SESSION QUEUED:", {
-  from,
-  callSid,
-  sessionSeconds: payment.totalSessionSeconds,
+  // Enqueue the live call into TaskRouter/Flex
+  const enqueue = response.enqueue({
+    workflowSid: process.env.TWILIO_WORKFLOW_SID,
+    waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
+    waitUrlMethod: "POST",
+    action: `${process.env.BASE_URL}/twilio/queue-fallback`,
+    method: "POST",
+  });
+
+  enqueue.task({
+    priority: "1",
+    timeout: "300",
+  }, JSON.stringify({
+    type: "inbound",
+    direction: "inbound",
+    caller_number: from,
+    session_type: payment.plan?.sessionLength || "",
+    session_length: payment.totalSessionSeconds || 900,
+    name: from,
+    called: req.body.Called || process.env.LIVE_AGENT_NUMBER,
+  }));
+
+  res.type("text/xml");
+  return res.send(response.toString());
 });
 
-try {
-  const twilioClient = require('twilio')(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
+// Hold music while caller waits in queue
+app.post("/twilio/hold-music", (req, res) => {
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you for holding. A caring listener will be with you shortly."
   );
+  response.redirect({ method: "POST" }, `${process.env.BASE_URL}/twilio/hold-music`);
+  res.type("text/xml");
+  res.send(response.toString());
+});
 
-  await twilioClient.studio.v2
-    .flows('FW8520122a6851630c570483753b160ac6')
-    .executions
-    .create({
-      to: from,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      parameters: {
-        session_type: payment.sessionType || '',
-        session_length: payment.totalSessionSeconds || 900,
-        caller_name: payment.callerName || ''
-      }
-    });
+// Fires after 300 seconds with no agent answer — sends back to Bland AI
+app.post("/twilio/queue-fallback", (req, res) => {
+  const { QueueResult, QueueTime, CallSid } = req.body;
+  console.log(`QUEUE FALLBACK: ${QueueResult} after ${QueueTime}s | ${CallSid}`);
 
-  response.say('One moment while I connect you with your dedicated listener.');
-} catch (err) {
-  console.error('Studio flow error:', err);
-  response.say('We are experiencing a brief delay. Please hold.');
-}
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
 
-res.type("text/xml");
-return res.send(response.toString());
+  if (QueueResult === "hangup" || QueueResult === "leave") {
+    response.hangup();
+  } else {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "All of our listeners are currently with other clients. Connecting you to our AI support specialist now."
+    );
+    response.redirect(
+      { method: "POST" },
+      `${process.env.BASE_URL}/bland/fallback`
+    );
+  }
+
+  res.type("text/xml");
+  res.send(response.toString());
 });
 
 app.post("/flex/start-live-session", (req, res) => {
