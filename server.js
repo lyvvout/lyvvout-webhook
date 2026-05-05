@@ -436,6 +436,8 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     from: from,
     to: req.body.Called || process.env.LIVE_AGENT_NUMBER,
     callSid: req.body.CallSid || "",
+    taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622",
+    taskQueueFriendlyName: "Live Agents"
   }));
 
   res.type("text/xml");
