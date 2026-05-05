@@ -477,6 +477,46 @@ app.post("/twilio/queue-fallback", (req, res) => {
   res.send(response.toString());
 });
 
+app.post("/twilio/hold-music", (req, res) => {
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you for holding. A caring listener will be with you shortly."
+  );
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/twilio/hold-music`
+  );
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+// Fires after 300 seconds with no agent answer — sends back to Bland AI
+app.post("/twilio/queue-fallback", (req, res) => {
+  const { QueueResult, QueueTime, CallSid } = req.body;
+  console.log(`QUEUE FALLBACK: ${QueueResult} after ${QueueTime}s | ${CallSid}`);
+
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  if (QueueResult === "hangup" || QueueResult === "leave") {
+    response.hangup();
+  } else {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "All of our listeners are currently with other clients. Connecting you to our AI support specialist now."
+    );
+    response.redirect(
+      { method: "POST" },
+      `${process.env.BASE_URL}/bland/fallback`
+    );
+  }
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
 app.post("/flex/start-live-session", (req, res) => {
   const {
     sessionId,
