@@ -421,12 +421,30 @@ console.log("LIVE SESSION QUEUED:", {
   sessionSeconds: payment.totalSessionSeconds,
 });
 
-const dial = response.dial({
-  action: `https://lyvvout-webhook.onrender.com/twilio/transfer-complete`,
-  timeout: 300,
-  callerId: process.env.TWILIO_PHONE_NUMBER
-});
-dial.number('+19852485988');
+try {
+  const twilioClient = require('twilio')(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+  );
+
+  await twilioClient.studio.v2
+    .flows('FW8520122a6851630c570483753b160ac6')
+    .executions
+    .create({
+      to: from,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      parameters: {
+        session_type: payment.sessionType || '',
+        session_length: payment.totalSessionSeconds || 900,
+        caller_name: payment.callerName || ''
+      }
+    });
+
+  response.say('One moment while I connect you with your dedicated listener.');
+} catch (err) {
+  console.error('Studio flow error:', err);
+  response.say('We are experiencing a brief delay. Please hold.');
+}
 
 res.type("text/xml");
 return res.send(response.toString());
