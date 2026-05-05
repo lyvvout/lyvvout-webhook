@@ -249,6 +249,48 @@ app.post("/bland/check-payment", async (req, res) => {
     upsell: payment.plan?.upsell || false,
     stripe_session_id: payment.stripeSessionId || null,
   });
+  
+});
+app.post("/bland/update-caller-name", async (req, res) => {
+  console.log("UPDATE CALLER NAME REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+  const callerName = req.body.caller_name || req.body.name || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  if (callerName) {
+    payment.customerName = callerName;
+    payment.callerName = callerName;
+    console.log("CALLER NAME UPDATED:", { phone, callerName });
+  }
+
+  return res.json({ ok: true, message: "Caller name updated", callerName });
 });
 
 app.post("/bland/session-status", async (req, res) => {
@@ -431,13 +473,23 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     caller_number: from,
     session_type: payment.plan?.sessionLength || "",
     session_length: payment.totalSessionSeconds || 900,
-    name: from,
+    name: payment.customerName || payment.callerName || from,
     called: req.body.Called || process.env.LIVE_AGENT_NUMBER,
     from: from,
     to: req.body.Called || process.env.LIVE_AGENT_NUMBER,
     callSid: req.body.CallSid || "",
     taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622",
-    taskQueueFriendlyName: "Live Agents"
+    taskQueueFriendlyName: "Live Agents",
+    conversations: {
+      communication_channel: "voice"
+    },
+    customers: {
+      phone: from,
+      name: payment.customerName || payment.callerName || from
+    },
+    lyvvout_session_type: payment.plan?.sessionLength || "not provided",
+    lyvvout_session_length: payment.totalSessionSeconds || 900,
+    lyvvout_caller: payment.customerName || payment.callerName || from
   }));
 
   res.type("text/xml");
