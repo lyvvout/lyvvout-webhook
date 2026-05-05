@@ -407,7 +407,7 @@ const payment =
 
 res.type("text/xml");
 return res.send(response.toString());
-  }
+}
 
 payment.liveCallSid = callSid;
 payment.liveQueuedAt = new Date().toISOString();
@@ -421,9 +421,12 @@ console.log("LIVE SESSION QUEUED:", {
   sessionSeconds: payment.totalSessionSeconds,
 });
 
-const flowUrl = `https://webhooks.twilio.com/v1/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Flows/FW8520122a6851630c570483753b160ac6`;
-
-response.redirect(flowUrl);
+const dial = response.dial({
+  action: `https://lyvvout-webhook.onrender.com/twilio/transfer-complete`,
+  timeout: 300,
+  callerId: process.env.TWILIO_PHONE_NUMBER
+});
+dial.number('+19852485988');
 
 res.type("text/xml");
 return res.send(response.toString());
