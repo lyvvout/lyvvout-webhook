@@ -12,9 +12,6 @@ const twilioClient = twilio(
 
 const app = express();
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 3000;
@@ -163,8 +160,10 @@ console.log("Payment confirmed:", paymentRecord);
 res.json({ received: true });
 }
 });
+
 // JSON routes after Stripe raw webhook
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 app.get("/", (req, res) => {
   res.json({
