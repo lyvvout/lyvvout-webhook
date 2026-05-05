@@ -405,8 +405,8 @@ const payment =
     );
     response.hangup();
 
-    res.type("text/xml");
-    return res.send(response.toString());
+res.type("text/xml");
+return res.send(response.toString());
   }
 
 payment.liveCallSid = callSid;
@@ -421,10 +421,9 @@ console.log("LIVE SESSION QUEUED:", {
   sessionSeconds: payment.totalSessionSeconds,
 });
 
-response.redirect(
-  { method: "POST" },
-  `https://webhooks.twilio.com/v1/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Flows/FW8520122a6851630c570483753b160ac6`
-);
+const flowUrl = `https://webhooks.twilio.com/v1/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Flows/FW8520122a6851630c570483753b160ac6`;
+
+response.redirect(flowUrl);
 
 res.type("text/xml");
 return res.send(response.toString());
