@@ -422,7 +422,7 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     method: "POST",
   });
 
-  enqueue.task({
+ enqueue.task({
     priority: "1",
     timeout: "300",
   }, JSON.stringify({
@@ -433,6 +433,9 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     session_length: payment.totalSessionSeconds || 900,
     name: from,
     called: req.body.Called || process.env.LIVE_AGENT_NUMBER,
+    from: from,
+    to: req.body.Called || process.env.LIVE_AGENT_NUMBER,
+    callSid: req.body.CallSid || "",
   }));
 
   res.type("text/xml");
