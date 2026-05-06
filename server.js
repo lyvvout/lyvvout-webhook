@@ -343,7 +343,7 @@ app.post("/bland/session-start", async (req, res) => {
     now.getTime() + payment.totalSessionSeconds * 1000
   ).toISOString();
 
-  payment.sessionType = sessionType || payment.sessionType;
+  payment.blandCallId = callId || payment.blandCallId || null;
 
   console.log("SESSION TIMER STARTED:", {
     phone,
@@ -672,6 +672,63 @@ app.post("/twilio/queue-fallback", (req, res) => {
 
   res.type("text/xml");
   res.send(response.toString());
+});
+
+app.post("/twilio/assignment-callback", async (req, res) => {
+  console.log("ASSIGNMENT CALLBACK:", req.body);
+
+  const callSid = req.body.CallSid || req.body.call_sid || "";
+  const taskAttributes = JSON.parse(req.body.TaskAttributes || "{}");
+  const from = taskAttributes.caller_number || taskAttributes.from || "";
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const phone = normalizePhone(from);
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callSid) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.liveCallSid === callSid
+        )
+      );
+    });
+
+  if (payment && !payment.timerStarted) {
+    const now = new Date();
+    payment.timerStarted = true;
+    payment.liveSessionStartedAt = now.toISOString();
+    payment.sessionStartedAt = now.toISOString();
+    payment.liveSessionActive = true;
+    payment.liveSessionEndsAt = new Date(
+      now.getTime() + payment.totalSessionSeconds * 1000
+    ).toISOString();
+
+    console.log("LIVE AGENT TIMER STARTED:", {
+      phone,
+      callSid,
+      totalSessionSeconds: payment.totalSessionSeconds,
+      liveSessionEndsAt: payment.liveSessionEndsAt
+    });
+
+    scheduleLiveSessionTimers(payment);
+  }
+
+  // Must return this instruction to Twilio to connect the call
+  res.json({
+    instruction: "conference",
+    dequeue_instruction: "conference"
+  });
 });
 
 app.post("/flex/start-live-session", (req, res) => {
