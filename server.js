@@ -458,19 +458,19 @@ app.post("/flex/call-log", async (req, res) => {
       },
       body: JSON.stringify({
         fields: {
-          'Date': date,
-          'Time': time,
-          'Listener Name': listener_name || '',
-          'Caller Phone': caller_phone || '',
-          'Session Type': session_type || '',
-          'Session Length': session_length || '',
-          'Self Harm Mentioned': self_harm_mentioned === true || self_harm_mentioned === 'true' ? 'Yes' : 'No',
-          'Threats Made': threats_made === true || threats_made === 'true' ? 'Yes' : 'No',
-          'Terms Violated': terms_violated === true || terms_violated === 'true' ? 'Yes' : 'No',
-          'Abusive Language': abusive_language === true || abusive_language === 'true' ? 'Yes' : 'No',
-          'Emergency Services Needed': emergency_services_needed === true || emergency_services_needed === 'true' ? 'Yes' : 'No',
-          'Notes': notes || ''
-        }
+  'Incident Report ID': caller_phone || '',
+  'Date': date,
+  'Time': time,
+  'Listener Name': listener_name || '',
+  'Session Type': session_type || '',
+  'Session Length': session_length || '',
+  'Did the caller express thoughts of self harm?': self_harm_mentioned === true || self_harm_mentioned === 'true',
+  'Did the caller make any threats?': threats_made === true || threats_made === 'true',
+  'Did the caller violate the terms and conditions?': terms_violated === true || terms_violated === 'true',
+  'Did the caller use abusive or threatening language towards the listener?': abusive_language === true || abusive_language === 'true',
+  'Was law enforcement or emergency services needed?': emergency_services_needed === true || emergency_services_needed === 'true',
+  'Additional Notes': notes || ''
+}
       })
     });
 
