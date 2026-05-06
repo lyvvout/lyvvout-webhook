@@ -429,6 +429,65 @@ app.post("/bland/upsell-confirmed", async (req, res) => {
   });
 });
 
+app.post("/flex/call-log", async (req, res) => {
+  console.log("CALL LOG REQUEST:", req.body);
+
+  const {
+    listener_name,
+    caller_phone,
+    session_type,
+    session_length,
+    self_harm_mentioned,
+    threats_made,
+    terms_violated,
+    abusive_language,
+    emergency_services_needed,
+    notes
+  } = req.body;
+
+  const now = new Date();
+  const date = now.toLocaleDateString('en-US');
+  const time = now.toLocaleTimeString('en-US');
+
+  try {
+    const response = await fetch('https://api.airtable.com/v0/appIvLuxW2Kvl5QTs/tbloznx9BU9P37vIp', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        fields: {
+          'Date': date,
+          'Time': time,
+          'Listener Name': listener_name || '',
+          'Caller Phone': caller_phone || '',
+          'Session Type': session_type || '',
+          'Session Length': session_length || '',
+          'Self Harm Mentioned': self_harm_mentioned === true || self_harm_mentioned === 'true' ? 'Yes' : 'No',
+          'Threats Made': threats_made === true || threats_made === 'true' ? 'Yes' : 'No',
+          'Terms Violated': terms_violated === true || terms_violated === 'true' ? 'Yes' : 'No',
+          'Abusive Language': abusive_language === true || abusive_language === 'true' ? 'Yes' : 'No',
+          'Emergency Services Needed': emergency_services_needed === true || emergency_services_needed === 'true' ? 'Yes' : 'No',
+          'Notes': notes || ''
+        }
+      })
+    });
+
+    const data = await response.json();
+    console.log("AIRTABLE RESPONSE:", data);
+
+    if (data.id) {
+      return res.json({ ok: true, message: "Call log saved", id: data.id });
+    } else {
+      return res.status(400).json({ ok: false, message: "Failed to save", error: data });
+    }
+  } catch (error) {
+    console.error("AIRTABLE ERROR:", error);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post("/bland/session-status", async (req, res) => {
   console.log("SESSION STATUS REQUEST BODY:", req.body);
 
