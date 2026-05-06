@@ -249,7 +249,7 @@ app.post("/bland/check-payment", async (req, res) => {
     upsell: payment.plan?.upsell || false,
     stripe_session_id: payment.stripeSessionId || null,
   });
-  
+
 });
 app.post("/bland/update-caller-name", async (req, res) => {
   console.log("UPDATE CALLER NAME REQUEST:", req.body);
@@ -291,6 +291,142 @@ app.post("/bland/update-caller-name", async (req, res) => {
   }
 
   return res.json({ ok: true, message: "Caller name updated", callerName });
+});
+
+app.post("/bland/session-start", async (req, res) => {
+  console.log("SESSION START REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+  const sessionType = req.body.session_type || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  if (payment.timerStarted === true) {
+    return res.json({
+      ok: true,
+      message: "Timer already started",
+      remainingSeconds: getLiveRemainingSeconds(payment)
+    });
+  }
+
+  const now = new Date();
+  payment.timerStarted = true;
+  payment.sessionStartedAt = now.toISOString();
+  payment.liveSessionStartedAt = now.toISOString();
+  payment.liveSessionActive = true;
+  payment.liveSessionEndsAt = new Date(
+    now.getTime() + payment.totalSessionSeconds * 1000
+  ).toISOString();
+
+  payment.sessionType = sessionType || payment.sessionType;
+
+  console.log("SESSION TIMER STARTED:", {
+    phone,
+    callId,
+    sessionType,
+    totalSessionSeconds: payment.totalSessionSeconds,
+    liveSessionStartedAt: payment.liveSessionStartedAt,
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
+
+  scheduleLiveSessionTimers(payment);
+
+  return res.json({
+    ok: true,
+    message: "Session timer started",
+    totalSessionSeconds: payment.totalSessionSeconds,
+    liveSessionStartedAt: payment.liveSessionStartedAt,
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
+});
+
+app.post("/bland/upsell-confirmed", async (req, res) => {
+  console.log("UPSELL CONFIRMED REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  // Add 900 seconds (15 minutes) to the session
+  const now = new Date();
+  const currentEndsAt = new Date(payment.liveSessionEndsAt).getTime();
+  const newEndsAt = new Date(currentEndsAt + 900000);
+
+  payment.totalSessionSeconds += 900;
+  payment.upsellSecondsAdded = (payment.upsellSecondsAdded || 0) + 900;
+  payment.liveSessionEndsAt = newEndsAt.toISOString();
+
+  // Reset only two minute and wrap up warnings
+  payment.twoMinuteWarningSent = false;
+  payment.wrapUpSent = false;
+  // Do NOT reset fiveMinuteWarningSent — upsell only happens once
+
+  console.log("UPSELL CONFIRMED - 15 MINUTES ADDED:", {
+    phone,
+    callId,
+    newEndsAt: payment.liveSessionEndsAt,
+    totalSessionSeconds: payment.totalSessionSeconds
+  });
+
+  // Reschedule only two minute warning and wrap up
+  scheduleUpsellTimers(payment);
+
+  return res.json({
+    ok: true,
+    message: "15 minutes added to session",
+    totalSessionSeconds: payment.totalSessionSeconds,
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
 });
 
 app.post("/bland/session-status", async (req, res) => {
@@ -497,42 +633,6 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
 });
 
 // Hold music while caller waits in queue
-app.post("/twilio/hold-music", (req, res) => {
-  const VoiceResponse = require("twilio").twiml.VoiceResponse;
-  const response = new VoiceResponse();
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Thank you for holding. A caring listener will be with you shortly."
-  );
-  response.redirect({ method: "POST" }, `${process.env.BASE_URL}/twilio/hold-music`);
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-// Fires after 300 seconds with no agent answer — sends back to Bland AI
-app.post("/twilio/queue-fallback", (req, res) => {
-  const { QueueResult, QueueTime, CallSid } = req.body;
-  console.log(`QUEUE FALLBACK: ${QueueResult} after ${QueueTime}s | ${CallSid}`);
-
-  const VoiceResponse = require("twilio").twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  if (QueueResult === "hangup" || QueueResult === "leave") {
-    response.hangup();
-  } else {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "All of our listeners are currently with other clients. Connecting you to our AI support specialist now."
-    );
-    response.redirect(
-      { method: "POST" },
-      `${process.env.BASE_URL}/bland/fallback`
-    );
-  }
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
 
 app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
@@ -757,7 +857,6 @@ function getLiveRemainingSeconds(payment) {
 
 function scheduleLiveSessionTimers(payment) {
   if (!payment) return;
-  if (!payment.sessionId) return;
   if (!payment.timerStarted) return;
   if (!payment.liveSessionEndsAt) return;
   if (payment.sessionComplete === true) return;
@@ -782,31 +881,66 @@ function scheduleLiveSessionTimers(payment) {
 
   if (fiveMinuteAt > now && payment.fiveMinuteWarningSent !== true) {
     setTimeout(() => {
-      fireLiveSessionPrompt(payment.sessionId, "five_minute_upsell");
+      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "five_minute_upsell");
     }, fiveMinuteAt - now);
   }
 
   if (twoMinuteAt > now && payment.twoMinuteWarningSent !== true) {
     setTimeout(() => {
-      fireLiveSessionPrompt(payment.sessionId, "two_minute_warning");
+      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "two_minute_warning");
     }, twoMinuteAt - now);
   }
 
   if (wrapUpAt > now && payment.wrapUpSent !== true) {
     setTimeout(() => {
-      fireLiveSessionPrompt(payment.sessionId, "thirty_second_wrap_up");
+      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "thirty_second_wrap_up");
     }, wrapUpAt - now);
   }
 
   if (endAt > now) {
     setTimeout(() => {
-      endLiveSessionCall(payment.sessionId, "paid_time_expired");
+      endLiveSessionCall(payment.callId || payment.customerPhone, "paid_time_expired");
     }, endAt - now);
   }
 }
 
-function fireLiveSessionPrompt(sessionId, promptType) {
-  const payment = findPaymentForFlexStart({ sessionId });
+function scheduleUpsellTimers(payment) {
+  if (!payment) return;
+  if (!payment.liveSessionEndsAt) return;
+  if (payment.sessionComplete === true) return;
+
+  const now = Date.now();
+  const endAt = new Date(payment.liveSessionEndsAt).getTime();
+  const twoMinuteAt = endAt - 2 * 60 * 1000;
+  const wrapUpAt = endAt - 30 * 1000;
+
+  const callId = payment.callId || payment.customerPhone;
+
+  if (twoMinuteAt > now) {
+    setTimeout(() => {
+      fireLiveSessionPrompt(callId, "two_minute_warning");
+    }, twoMinuteAt - now);
+  }
+
+  if (wrapUpAt > now) {
+    setTimeout(() => {
+      fireLiveSessionPrompt(callId, "thirty_second_wrap_up");
+    }, wrapUpAt - now);
+  }
+
+  if (endAt > now) {
+    setTimeout(() => {
+      endLiveSessionCall(callId, "paid_time_expired");
+    }, endAt - now);
+  }
+}
+
+function fireLiveSessionPrompt(callId, promptType) {
+ const payment =
+    payments.get(callId) ||
+    [...payments.values()].find(p =>
+      p.callId === callId || p.customerPhone === callId
+    );
 
   if (!payment) return;
   if (payment.sessionComplete === true) return;
@@ -858,8 +992,12 @@ function fireLiveSessionPrompt(sessionId, promptType) {
   });
 }
 
-async function endLiveSessionCall(sessionId, reason) {
-  const payment = findPaymentForFlexStart({ sessionId });
+async function endLiveSessionCall(callId, reason) {
+  const payment =
+    payments.get(callId) ||
+    [...payments.values()].find(p =>
+      p.callId === callId || p.customerPhone === callId
+    );
 
   if (!payment) return;
   if (payment.sessionComplete === true) return;
