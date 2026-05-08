@@ -689,7 +689,7 @@ enqueue.task({
 
 // Hold music while caller waits in queue
 
-app.post("/twilio/hold-music", (req, res) => {
+app.all("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
   
