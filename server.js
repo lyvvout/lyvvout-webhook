@@ -796,12 +796,11 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
 
   // Enqueue the live call into TaskRouter/Flex
 const enqueue = response.enqueue({
-    workflowSid: process.env.TWILIO_WORKFLOW_SID,
-    waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
-    waitUrlMethod: "POST",
-    action: `${process.env.BASE_URL}/twilio/queue-fallback`,
-    method: "POST",
-    timeout: 300
+  workflowSid: process.env.TWILIO_WORKFLOW_SID,
+  waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
+  waitUrlMethod: "POST",
+  action: `${process.env.BASE_URL}/twilio/queue-fallback`,
+  method: "POST"
 });
 
 enqueue.task({
@@ -825,55 +824,147 @@ app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
+  const queueTime = parseInt(req.body.QueueTime || "0", 10);
+
+  console.log("Hold music waitUrl hit:", {
+    CallSid: req.body.CallSid,
+    QueueSid: req.body.QueueSid,
+    QueueTime: queueTime,
+    QueuePosition: req.body.QueuePosition,
+    CurrentQueueSize: req.body.CurrentQueueSize
+  });
+
+  if (queueTime >= 300) {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "We were not able to connect you with a live listener right now. I am connecting you back to LyvvOut support."
+    );
+
+    response.leave();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
   response.say(
     { voice: "Polly.Joanna" },
-    "Thank you for holding. All of our listeners are currently assisting other callers. Please continue to hold while we connect you."
-  );
-
-  response.play(
-    "http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
+    "Thank you for waiting. A live listener will be with you as soon as possible. Please stay on the line."
   );
 
   response.pause({ length: 30 });
 
-  response.redirect(
-    { method: "POST" },
-    `${process.env.BASE_URL}/twilio/hold-music`
-  );
-
   res.type("text/xml");
-  return res.send(response.toString());
+  res.send(response.toString());
 });
 
 // Fires after 300 seconds with no agent answer — sends back to Bland AI
 app.post("/twilio/queue-fallback", (req, res) => {
-  const { QueueResult, QueueTime, CallSid } = req.body;
-  console.log(`QUEUE FALLBACK: ${QueueResult} after ${QueueTime}s | ${CallSid}`);
-
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-  if (QueueResult === "hangup" || QueueResult === "leave") {
+  const {
+    QueueResult,
+    QueueTime,
+    CallSid,
+    QueueSid
+  } = req.body;
+
+  const queueSeconds = parseInt(QueueTime || "0", 10);
+
+  console.log("Queue fallback/action hit:", {
+    CallSid,
+    QueueSid,
+    QueueResult,
+    QueueTime: queueSeconds
+  });
+
+  const shouldSendToBland =
+    QueueResult === "leave" ||
+    QueueResult === "queue-full" ||
+    QueueResult === "error" ||
+    QueueResult === "system-error" ||
+    queueSeconds >= 300;
+
+  if (!shouldSendToBland) {
+    console.log("Queue ended without Bland fallback:", {
+      CallSid,
+      QueueResult,
+      QueueTime: queueSeconds
+    });
+
     response.hangup();
-  } else if (QueueResult === "error" || QueueResult === undefined || !QueueResult) {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "Connecting you with your dedicated listener now."
-    );
-    response.redirect(
-      { method: "POST" },
-      `${process.env.BASE_URL}/bland/fallback`
-    );
-  } else {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "We appreciate your patience. Connecting you with your dedicated listener now."
-    );
-    response.redirect(
-      { method: "POST" },
-      `${process.env.BASE_URL}/bland/fallback`
-    );
+
+    res.type("text/xml");
+    return res.send(response.toString());
   }
+
+  if (!process.env.BLAND_FALLBACK_NUMBER) {
+    console.error("Missing BLAND_FALLBACK_NUMBER env variable.");
+
+    response.say(
+      { voice: "Polly.Joanna" },
+      "We are unable to reconnect your call right now. Please call LyvvOut again."
+    );
+
+    response.hangup();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  response.say(
+    { voice: "Polly.Joanna" },
+    "I am connecting you back to LyvvOut now."
+  );
+
+  const dial = response.dial({
+    callerId: process.env.TWILIO_CALLER_ID || undefined,
+    answerOnBridge: true,
+    timeout: 30
+  });
+
+  dial.number(process.env.BLAND_FALLBACK_NUMBER);
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/bland/fallback", (req, res) => {
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  console.log("Bland fallback route hit:", {
+    CallSid: req.body.CallSid,
+    From: req.body.From,
+    To: req.body.To
+  });
+
+  if (!process.env.BLAND_FALLBACK_NUMBER) {
+    console.error("Missing BLAND_FALLBACK_NUMBER env variable.");
+
+    response.say(
+      { voice: "Polly.Joanna" },
+      "We are unable to reconnect your call right now. Please call LyvvOut again."
+    );
+
+    response.hangup();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  response.say(
+    { voice: "Polly.Joanna" },
+    "I am reconnecting you to LyvvOut support now."
+  );
+
+  const dial = response.dial({
+    callerId: process.env.TWILIO_CALLER_ID || undefined,
+    answerOnBridge: true,
+    timeout: 30
+  });
+
+  dial.number(process.env.BLAND_FALLBACK_NUMBER);
 
   res.type("text/xml");
   res.send(response.toString());
