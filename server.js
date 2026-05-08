@@ -827,15 +827,11 @@ app.all("/twilio/hold-music", (req, res) => {
   
   response.say(
     { voice: "Polly.Joanna" },
-    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly. Please continue to hold."
+    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly."
   );
   response.play({
-    loop: 3
+    loop: 100
   }, 'http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3');
-  response.redirect(
-    { method: "POST" },
-    `${process.env.BASE_URL}/twilio/hold-music`
-  );
   
   res.type("text/xml");
   res.send(response.toString());
