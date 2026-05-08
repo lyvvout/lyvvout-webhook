@@ -678,8 +678,7 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     type: "inbound",
     direction: "inbound",
     caller_number: from,
-    session_type: payment.plan?.sessionLength || "",
-    session_length: payment.totalSessionSeconds || 900,
+session_type: payment.plan?.sessionLength || payment.sessionType || "Standard Session",    session_length: payment.totalSessionSeconds || 900,
     name: payment.customerName || payment.callerName || from,
     called: req.body.Called || process.env.LIVE_AGENT_NUMBER,
     from: from,
@@ -694,8 +693,7 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
       phone: from,
       name: payment.customerName || payment.callerName || from
     },
-    lyvvout_session_type: payment.plan?.sessionLength || "not provided",
-    lyvvout_session_length: payment.totalSessionSeconds || 900,
+lyvvout_session_type: payment.plan?.sessionLength || payment.sessionType || "Standard Session",    lyvvout_session_length: payment.totalSessionSeconds || 900,
     lyvvout_caller: payment.customerName || payment.callerName || from
   }));
 
