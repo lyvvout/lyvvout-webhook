@@ -706,9 +706,19 @@ lyvvout_session_type: payment.plan?.sessionLength || payment.sessionType || "Sta
 app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
+  
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly. Please continue to hold."
+  );
   response.play({
-    loop: 10
+    loop: 3
   }, 'http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3');
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/twilio/hold-music`
+  );
+  
   res.type("text/xml");
   res.send(response.toString());
 });
@@ -721,7 +731,7 @@ app.post("/twilio/queue-fallback", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-if (QueueResult === "hangup" || QueueResult === "leave") {
+  if (QueueResult === "hangup" || QueueResult === "leave") {
     response.hangup();
   } else if (QueueResult === "error" || QueueResult === undefined || !QueueResult) {
     response.say(
@@ -735,7 +745,7 @@ if (QueueResult === "hangup" || QueueResult === "leave") {
   } else {
     response.say(
       { voice: "Polly.Joanna" },
-      "All of our listeners are currently with other clients. Connecting you to our AI support specialist now."
+      "We appreciate your patience. Connecting you with your dedicated listener now."
     );
     response.redirect(
       { method: "POST" },
