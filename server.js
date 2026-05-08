@@ -443,6 +443,50 @@ app.post("/bland/upsell-confirmed", async (req, res) => {
   });
 });
 
+app.post("/bland/five-minute-warning", async (req, res) => {
+  console.log("FIVE MINUTE WARNING REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  payment.fiveMinuteWarningSent = true;
+  payment.upsellOfferActive = true;
+  payment.currentPrompt = "5-MINUTE UPSELL";
+  payment.currentPromptScript = "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes for just $20?";
+  payment.lastPromptType = "five_minute_warning";
+  payment.lastPromptAt = new Date().toISOString();
+
+  console.log("FIVE MINUTE WARNING FIRED:", { phone, callId });
+
+  return res.json({ ok: true, message: "Five minute warning recorded" });
+});
+
 app.post("/bland/two-minute-warning", async (req, res) => {
   console.log("TWO MINUTE WARNING REQUEST:", req.body);
 
@@ -758,7 +802,7 @@ const enqueue = response.enqueue({
     action: `${process.env.BASE_URL}/twilio/queue-fallback`,
     method: "POST",
   });
-  
+
 enqueue.task({
     priority: "1",
     timeout: "300",
