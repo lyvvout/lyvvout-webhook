@@ -229,6 +229,20 @@ app.post("/bland/check-payment", async (req, res) => {
 
   console.log("PAYMENT LOOKUP RESULT:", payment || "NO PAYMENT FOUND");
 
+  if (payment && !payment.timerStarted) {
+  const eightMinutes = 8 * 60 * 1000;
+  if (Date.now() > new Date(payment.paidAt).getTime() + eightMinutes) {
+    payments.delete(phone);
+    payments.delete(callId);
+    payments.delete(normalizedCallId);
+    return res.json({
+      paid: false,
+      paymentStatus: "expired",
+      message: "Payment session has expired. Please start a new session."
+    });
+  }
+}
+
   if (!payment || payment.paid !== true) {
     return res.json({
       paid: false,
@@ -696,14 +710,9 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
 app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Thank you for holding. A caring listener will be with you shortly."
-  );
-  response.redirect(
-    { method: "POST" },
-    `${process.env.BASE_URL}/twilio/hold-music`
-  );
+  response.play({
+    loop: 10
+  }, 'http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3');
   res.type("text/xml");
   res.send(response.toString());
 });
