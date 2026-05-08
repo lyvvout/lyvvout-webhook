@@ -1147,6 +1147,29 @@ function scheduleUpsellTimers(payment) {
   }
 }
 
+async function injectBlandSpeech(callId, message) {
+  if (!callId) return;
+  
+  try {
+    const response = await fetch(`https://api.bland.ai/v1/calls/${callId}/inject`, {
+      method: 'POST',
+      headers: {
+        'Authorization': process.env.BLAND_AI_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: message,
+        voice: "sophie"
+      })
+    });
+    
+    const data = await response.json();
+    console.log("BLAND INJECT RESPONSE:", data);
+  } catch (error) {
+    console.error("BLAND INJECT ERROR:", error.message);
+  }
+}
+
 function fireLiveSessionPrompt(callId, promptType) {
  const payment =
     payments.get(callId) ||
@@ -1157,39 +1180,39 @@ function fireLiveSessionPrompt(callId, promptType) {
   if (!payment) return;
   if (payment.sessionComplete === true) return;
 
-  if (promptType === "five_minute_upsell") {
+ if (promptType === "five_minute_upsell") {
     if (payment.fiveMinuteWarningSent === true) return;
-
     payment.fiveMinuteWarningSent = true;
     payment.upsellOfferActive = true;
     payment.upsellPaymentPending = false;
     payment.upsellPaymentComplete = false;
 
     payment.currentPrompt = "5-MINUTE UPSELL";
-    payment.currentPromptScript =
-      "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes?";
+    payment.currentPromptScript = "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes for just $20? Visit lyvvout.com forward slash payment to add more time.";
+    
+    injectBlandSpeech(payment.blandCallId, payment.currentPromptScript);
   }
 
   if (promptType === "two_minute_warning") {
     if (payment.twoMinuteWarningSent === true) return;
-
     payment.twoMinuteWarningSent = true;
     payment.upsellOfferActive = false;
 
     payment.currentPrompt = "2-MINUTE WARNING";
-    payment.currentPromptScript =
-      "You have about two minutes remaining, so we are going to begin gently wrapping up your session.";
+    payment.currentPromptScript = "You have about two minutes remaining in your session. We are going to begin gently wrapping up.";
+    
+    injectBlandSpeech(payment.blandCallId, payment.currentPromptScript);
   }
 
   if (promptType === "thirty_second_wrap_up") {
     if (payment.wrapUpSent === true) return;
-
     payment.wrapUpSent = true;
     payment.upsellOfferActive = false;
 
     payment.currentPrompt = "30-SECOND WRAP-UP";
-    payment.currentPromptScript =
-      "We are at the end of your session, so I am going to leave you with one final thought before the call closes.";
+    payment.currentPromptScript = "We are at the end of your session. I am going to leave you with one final thought. Remember you are not alone and you can always return to LyvvOut whenever you need to be heard.";
+    
+    injectBlandSpeech(payment.blandCallId, payment.currentPromptScript);
   }
 
   payment.lastPromptType = promptType;
