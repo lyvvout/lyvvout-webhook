@@ -671,30 +671,16 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
     method: "POST",
   });
 
- enqueue.task({
+enqueue.task({
     priority: "1",
     timeout: "300",
   }, JSON.stringify({
     type: "inbound",
     direction: "inbound",
-    caller_number: from,
-session_type: payment.plan?.sessionLength || payment.sessionType || "Standard Session",    session_length: payment.totalSessionSeconds || 900,
-    name: payment.customerName || payment.callerName || from,
-    called: req.body.Called || process.env.LIVE_AGENT_NUMBER,
     from: from,
-    to: req.body.Called || process.env.LIVE_AGENT_NUMBER,
-    callSid: req.body.CallSid || "",
-    taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622",
-    taskQueueFriendlyName: "Live Agents",
-    conversations: {
-      communication_channel: "voice"
-    },
-    customers: {
-      phone: from,
-      name: payment.customerName || payment.callerName || from
-    },
-lyvvout_session_type: payment.plan?.sessionLength || payment.sessionType || "Standard Session",    lyvvout_session_length: payment.totalSessionSeconds || 900,
-    lyvvout_caller: payment.customerName || payment.callerName || from
+    caller_number: from,
+    callSid: callSid,
+    taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622"
   }));
 
   res.type("text/xml");
