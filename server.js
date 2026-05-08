@@ -751,12 +751,14 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
   console.log("QUEUING CALL INTO FLEX:", { from, callSid });
 
   // Enqueue the live call into TaskRouter/Flex
- const enqueue = response.enqueue({
+const enqueue = response.enqueue({
     workflowSid: process.env.TWILIO_WORKFLOW_SID,
+    waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
+    waitUrlMethod: "GET",
     action: `${process.env.BASE_URL}/twilio/queue-fallback`,
     method: "POST",
   });
-
+  
 enqueue.task({
     priority: "1",
     timeout: "300",
