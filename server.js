@@ -798,15 +798,15 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
 const enqueue = response.enqueue({
     workflowSid: process.env.TWILIO_WORKFLOW_SID,
     waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
-    waitUrlMethod: "GET",
+    waitUrlMethod: "POST",
     action: `${process.env.BASE_URL}/twilio/queue-fallback`,
     method: "POST",
-  });
+    timeout: 300
+});
 
 enqueue.task({
-    priority: "1",
-    timeout: "300",
-  }, JSON.stringify({
+  priority: "1"
+}, JSON.stringify({
     type: "inbound",
     direction: "inbound",
     from: from,
@@ -821,20 +821,28 @@ enqueue.task({
 
 // Hold music while caller waits in queue
 
-app.all("/twilio/hold-music", (req, res) => {
+app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
-  
+
   response.say(
     { voice: "Polly.Joanna" },
-    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly."
+    "Thank you for holding. All of our listeners are currently assisting other callers. Please continue to hold while we connect you."
   );
-  response.play({
-    loop: 100
-  }, 'http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3');
-  
+
+  response.play(
+    "http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
+  );
+
+  response.pause({ length: 30 });
+
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/twilio/hold-music`
+  );
+
   res.type("text/xml");
-  res.send(response.toString());
+  return res.send(response.toString());
 });
 
 // Fires after 300 seconds with no agent answer — sends back to Bland AI
