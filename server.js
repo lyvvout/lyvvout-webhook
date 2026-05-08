@@ -443,6 +443,92 @@ app.post("/bland/upsell-confirmed", async (req, res) => {
   });
 });
 
+app.post("/bland/two-minute-warning", async (req, res) => {
+  console.log("TWO MINUTE WARNING REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  payment.twoMinuteWarningSent = true;
+  payment.currentPrompt = "2-MINUTE WARNING";
+  payment.currentPromptScript = "You have about two minutes remaining in your session. We are going to begin gently wrapping up.";
+  payment.lastPromptType = "two_minute_warning";
+  payment.lastPromptAt = new Date().toISOString();
+
+  console.log("TWO MINUTE WARNING FIRED:", { phone, callId });
+
+  return res.json({ ok: true, message: "Two minute warning recorded" });
+});
+
+app.post("/bland/thirty-second-wrap-up", async (req, res) => {
+  console.log("THIRTY SECOND WRAP UP REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone = req.body.phone || req.body.from || "";
+  const phone = normalizePhone(rawPhone);
+  const callId = req.body.call_id || req.body.callId || "";
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          p.callId === callId
+        )
+      );
+    });
+
+  if (!payment) {
+    return res.json({ ok: false, message: "No payment record found" });
+  }
+
+  payment.wrapUpSent = true;
+  payment.currentPrompt = "30-SECOND WRAP-UP";
+  payment.currentPromptScript = "We are at the end of your session. I am going to leave you with one final thought. Remember you are not alone and you can always return to LyvvOut whenever you need to be heard.";
+  payment.lastPromptType = "thirty_second_wrap_up";
+  payment.lastPromptAt = new Date().toISOString();
+
+  console.log("THIRTY SECOND WRAP UP FIRED:", { phone, callId });
+
+  return res.json({ ok: true, message: "Thirty second wrap up recorded" });
+});
+
 app.post("/flex/call-log", async (req, res) => {
   console.log("CALL LOG REQUEST:", req.body);
 
