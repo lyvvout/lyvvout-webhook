@@ -725,8 +725,17 @@ app.post("/twilio/queue-fallback", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-  if (QueueResult === "hangup" || QueueResult === "leave") {
+if (QueueResult === "hangup" || QueueResult === "leave") {
     response.hangup();
+  } else if (QueueResult === "error" || QueueResult === undefined || !QueueResult) {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "Connecting you with your dedicated listener now."
+    );
+    response.redirect(
+      { method: "POST" },
+      `${process.env.BASE_URL}/bland/fallback`
+    );
   } else {
     response.say(
       { voice: "Polly.Joanna" },
