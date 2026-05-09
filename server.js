@@ -851,10 +851,7 @@ app.post("/twilio/hold-music", (req, res) => {
     "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
   );
 
-  response.play(
-    { loop: 1 },
-    "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
-  );
+  response.pause({ length: 60 });
 
   res.type("text/xml");
   res.send(response.toString());
@@ -903,7 +900,7 @@ app.post("/bland/fallback", (req, res) => {
       "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
     );
 
-    response.pause({ length: 30 });
+    response.pause({ length: 60 });
 
     response.redirect(
       { method: "POST" },
@@ -913,6 +910,8 @@ app.post("/bland/fallback", (req, res) => {
     res.type("text/xml");
     return res.send(response.toString());
   }
+
+  console.log("Dialing Twilio Bland fallback number:", fallbackNumber);
 
   const dial = response.dial({
     answerOnBridge: true,
@@ -1414,6 +1413,25 @@ app.post('/send-payment-sms', async (req, res) => {
     console.error('SMS ERROR:', error);
     res.status(500).json({ error: 'Failed to send SMS' });
   }
+});
+
+app.post("/twilio/bland-fallback-entry", (req, res) => {
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  console.log("Twilio Bland fallback entry hit:", {
+    CallSid: req.body.CallSid,
+    From: req.body.From,
+    To: req.body.To
+  });
+
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
+  );
+
+  res.type("text/xml");
+  res.send(response.toString());
 });
 
 app.listen(PORT, () => {
