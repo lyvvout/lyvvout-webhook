@@ -837,7 +837,7 @@ app.post("/twilio/hold-music", (req, res) => {
   if (queueTime >= 300) {
     response.say(
       { voice: "Polly.Joanna" },
-      "We were not able to connect you with a live listener right now. I am connecting you back to LyvvOut support."
+      "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
     );
 
     response.leave();
@@ -848,10 +848,13 @@ app.post("/twilio/hold-music", (req, res) => {
 
   response.say(
     { voice: "Polly.Joanna" },
-    "Thank you for waiting. A live listener will be with you as soon as possible. Please stay on the line."
+    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
   );
 
-  response.pause({ length: 30 });
+  response.play(
+    { loop: 1 },
+    "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3"
+  );
 
   res.type("text/xml");
   res.send(response.toString());
@@ -862,68 +865,19 @@ app.post("/twilio/queue-fallback", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-  const {
-    QueueResult,
-    QueueTime,
-    CallSid,
-    QueueSid
-  } = req.body;
-
-  const queueSeconds = parseInt(QueueTime || "0", 10);
+  const { QueueResult, QueueTime, CallSid, QueueSid } = req.body;
 
   console.log("Queue fallback/action hit:", {
     CallSid,
     QueueSid,
     QueueResult,
-    QueueTime: queueSeconds
+    QueueTime
   });
 
-  const shouldSendToBland =
-    QueueResult === "leave" ||
-    QueueResult === "queue-full" ||
-    QueueResult === "error" ||
-    QueueResult === "system-error" ||
-    queueSeconds >= 300;
-
-  if (!shouldSendToBland) {
-    console.log("Queue ended without Bland fallback:", {
-      CallSid,
-      QueueResult,
-      QueueTime: queueSeconds
-    });
-
-    response.hangup();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  if (!process.env.BLAND_FALLBACK_NUMBER) {
-    console.error("Missing BLAND_FALLBACK_NUMBER env variable.");
-
-    response.say(
-      { voice: "Polly.Joanna" },
-      "We are unable to reconnect your call right now. Please call LyvvOut again."
-    );
-
-    response.hangup();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  response.say(
-    { voice: "Polly.Joanna" },
-    "I am connecting you back to LyvvOut now."
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/bland/fallback`
   );
-
-  const dial = response.dial({
-    callerId: process.env.TWILIO_CALLER_ID || undefined,
-    answerOnBridge: true,
-    timeout: 30
-  });
-
-  dial.number(process.env.BLAND_FALLBACK_NUMBER);
 
   res.type("text/xml");
   res.send(response.toString());
@@ -939,32 +893,33 @@ app.post("/bland/fallback", (req, res) => {
     To: req.body.To
   });
 
-  if (!process.env.BLAND_FALLBACK_NUMBER) {
-    console.error("Missing BLAND_FALLBACK_NUMBER env variable.");
+  const fallbackNumber = process.env.TWILIO_BLAND_FALLBACK_NUMBER;
+
+  if (!fallbackNumber) {
+    console.error("Missing TWILIO_BLAND_FALLBACK_NUMBER env variable.");
 
     response.say(
       { voice: "Polly.Joanna" },
-      "We are unable to reconnect your call right now. Please call LyvvOut again."
+      "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
     );
 
-    response.hangup();
+    response.pause({ length: 30 });
+
+    response.redirect(
+      { method: "POST" },
+      `${process.env.BASE_URL}/bland/fallback`
+    );
 
     res.type("text/xml");
     return res.send(response.toString());
   }
 
-  response.say(
-    { voice: "Polly.Joanna" },
-    "I am reconnecting you to LyvvOut support now."
-  );
-
   const dial = response.dial({
-    callerId: process.env.TWILIO_CALLER_ID || undefined,
     answerOnBridge: true,
-    timeout: 30
+    timeout: 45
   });
 
-  dial.number(process.env.BLAND_FALLBACK_NUMBER);
+  dial.number(fallbackNumber);
 
   res.type("text/xml");
   res.send(response.toString());
