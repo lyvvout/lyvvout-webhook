@@ -925,6 +925,22 @@ app.post("/bland/fallback", (req, res) => {
   res.send(response.toString());
 });
 
+app.post("/bland/ai-fallback-transfer", (req, res) => {
+  console.log("Bland AI fallback transfer webhook hit:", {
+    body: req.body,
+    query: req.query
+  });
+
+  res.status(200).json({
+    success: true,
+    route: "ai_fallback_transfer",
+    message:
+      "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener.",
+    next_action: "AI_FALLBACK_TRANSFER",
+    should_continue: true
+  });
+});
+
 app.post("/twilio/assignment-callback", async (req, res) => {
   console.log("ASSIGNMENT CALLBACK:", req.body);
 
