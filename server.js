@@ -307,6 +307,107 @@ app.post("/bland/update-caller-name", async (req, res) => {
   return res.json({ ok: true, message: "Caller name updated", callerName });
 });
 
+app.post("/bland/fallback-session-lookup", async (req, res) => {
+  console.log("FALLBACK SESSION LOOKUP REQUEST:", req.body);
+
+  const normalizePhone = (value) => {
+    if (!value) return "";
+    const digits = String(value).replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return String(value).trim();
+  };
+
+  const rawPhone =
+    req.body.phone ||
+    req.body.from ||
+    req.body.caller_phone ||
+    req.body.callerPhone ||
+    "";
+
+  const phone = normalizePhone(rawPhone);
+
+  const callId =
+    req.body.call_id ||
+    req.body.callId ||
+    req.body.bland_call_id ||
+    req.body.client_reference_id ||
+    "";
+
+  const normalizedCallId = normalizePhone(callId);
+
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    payments.get(normalizedCallId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          p.callId === callId ||
+          normalizePhone(p.callId) === normalizedCallId ||
+          normalizePhone(p.callId) === phone
+        )
+      );
+    });
+
+  if (!payment || payment.paid !== true) {
+    console.log("FALLBACK SESSION LOOKUP: NO PAYMENT FOUND", {
+      rawPhone,
+      phone,
+      callId,
+      normalizedCallId
+    });
+
+    return res.json({
+      ok: false,
+      paid: false,
+      paymentStatus: "not_found",
+      message: "No active paid session was found for this fallback call."
+    });
+  }
+
+  const sessionSeconds =
+    payment.totalSessionSeconds ||
+    payment.sessionSeconds ||
+    payment.plan?.seconds ||
+    900;
+
+  const sessionLength =
+    payment.plan?.sessionLength ||
+    String(Math.round(sessionSeconds / 60));
+
+  payment.fallbackBlandCallId = callId || payment.fallbackBlandCallId || null;
+  payment.blandCallId = callId || payment.blandCallId || null;
+  payment.lastFallbackLookupAt = new Date().toISOString();
+
+  console.log("FALLBACK SESSION LOOKUP FOUND PAYMENT:", {
+    phone,
+    callId,
+    sessionLength,
+    sessionSeconds,
+    customerPhone: payment.customerPhone,
+    paid: payment.paid
+  });
+
+  return res.json({
+    ok: true,
+    paid: true,
+    paymentStatus: "paid",
+    message: "Paid session found.",
+    call_id: payment.callId || callId || null,
+    bland_call_id: callId || null,
+    customerPhone: payment.customerPhone || payment.phone || phone,
+    session_length: sessionLength,
+    session_seconds: sessionSeconds,
+    total_session_seconds: sessionSeconds,
+    session_type: payment.sessionType || payment.session_type || null,
+    timerStarted: payment.timerStarted === true
+  });
+});
+
 app.post("/bland/session-start", async (req, res) => {
   console.log("SESSION START REQUEST:", req.body);
 
