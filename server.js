@@ -25,22 +25,16 @@ const PAYMENT_LINKS = {
     sessionLength: "15",
     price: "25",
     seconds: 900,
+    upsell: false,
   },
-"https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
-  sessionLength: "15",
-  price: "25",
-  seconds: 900,
-},
-  "https://buy.stripe.com/3cIbJ20CH8Yedh29vb3Ru01": {
-    sessionLength: "30",
-    price: "49",
-    seconds: 1800,
+
+  "https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
+    sessionLength: "15",
+    price: "25",
+    seconds: 900,
+    upsell: false,
   },
-  "https://buy.stripe.com/fZu7sM5X1eiyel622J3Ru02": {
-    sessionLength: "60",
-    price: "99",
-    seconds: 3600,
-  },
+
   "https://buy.stripe.com/5kQaEY859caq6SEbDj3Ru03": {
     sessionLength: "15",
     price: "20",
@@ -133,16 +127,17 @@ const paymentRecord = {
   plan: matchedPlan,
   paidAt: now.toISOString(),
 
-  // SESSION TIMER FIELDS
-  sessionStartedAt: now.toISOString(),
-  sessionSeconds,
-  upsellSecondsAdded: isUpsell ? 900 : 0,
-  totalSessionSeconds: sessionSeconds + (isUpsell ? 900 : 0),
+ // SESSION TIMER FIELDS
+sessionStartedAt: null,
+timerStarted: false,
+sessionSeconds,
+upsellSecondsAdded: isUpsell ? 900 : 0,
+totalSessionSeconds: sessionSeconds + (isUpsell ? 900 : 0),
 
-  fiveMinuteWarningSent: false,
-  twoMinuteWarningSent: false,
-  wrapUpSent: false,
-  sessionComplete: false,
+fiveMinuteWarningSent: false,
+twoMinuteWarningSent: false,
+wrapUpSent: false,
+sessionComplete: false,
 };
 
 payments.set(callId, paymentRecord);
@@ -784,9 +779,33 @@ app.post("/bland/session-status", async (req, res) => {
       message: "No active paid session found.",
     });
   }
+if (payment.timerStarted !== true || !payment.sessionStartedAt) {
+  return res.json({
+    active: true,
+    paid: true,
+    call_id: payment.callId || callId || null,
+    remaining_seconds:
+      payment.totalSessionSeconds ||
+      payment.sessionSeconds ||
+      payment.plan?.seconds ||
+      900,
+    elapsed_seconds: 0,
+    total_session_seconds:
+      payment.totalSessionSeconds ||
+      payment.sessionSeconds ||
+      payment.plan?.seconds ||
+      900,
+    five_minute_warning_due: false,
+    two_minute_warning_due: false,
+    wrap_up_due: false,
+    session_complete: false,
+    timer_started: false,
+    message: "Paid session found, but timer has not started yet.",
+  });
+}
 
   const now = Date.now();
-  const startedAt = new Date(payment.sessionStartedAt || payment.paidAt).getTime();
+  const startedAt = new Date(payment.sessionStartedAt).getTime();
   const totalSessionSeconds =
     payment.totalSessionSeconds ||
     payment.sessionSeconds ||
@@ -1487,21 +1506,16 @@ async function endLiveSessionCall(callId, reason) {
 
 app.post('/send-payment-sms', async (req, res) => {
   try {
-    const { phone_number, session_length } = req.body;
+    const { phone_number, session_length, upsell } = req.body;
 
     let message = '';
 
-    if (session_length === 15) {
-      message = 'LyvvOut: Here is your secure payment link for your Quick Break 15 minute session: https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
-    } 
-    else if (session_length === 30) {
-      message = 'LyvvOut: Here is your secure payment link for your Standard Session 30 minute session: https://buy.stripe.com/3cIbJ20CH8Yedh29vb3Ru01 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
-    } 
-    else if (session_length === 60) {
-      message = 'LyvvOut: Here is your secure payment link for your Deep Session 60 minute session: https://buy.stripe.com/fZu7sM5X1eiyel622J3Ru02 — By completing payment you agree to LyvvOut’s terms at lyvvout.com.';
-    } 
-    else {
-      return res.status(400).json({ error: 'Invalid session length' });
+    if (upsell === true || upsell === 'true') {
+      message =
+        'LyvvOut: You requested a 15-minute session extension. Complete your secure payment here: https://lyvvout.com/payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
+    } else {
+      message =
+        'LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
     }
 
     const sms = await twilioClient.messages.create({
