@@ -127,14 +127,15 @@ const paymentRecord = {
   plan: matchedPlan,
   paidAt: now.toISOString(),
 
- // SESSION TIMER FIELDS
+// SESSION TIMER FIELDS
 sessionStartedAt: null,
 timerStarted: false,
 sessionSeconds,
-upsellSecondsAdded: isUpsell ? 900 : 0,
-totalSessionSeconds: sessionSeconds + (isUpsell ? 900 : 0),
+upsellSecondsAdded: 0,
+totalSessionSeconds: sessionSeconds,
 
-fiveMinuteWarningSent: false,
+upsellReminderSent: false,
+fiveMinuteWarningSent: false, // temporary legacy flag used for 8-minute upsell reminder
 twoMinuteWarningSent: false,
 wrapUpSent: false,
 sessionComplete: false,
@@ -432,47 +433,71 @@ app.post("/bland/session-start", async (req, res) => {
       );
     });
 
-  if (!payment) {
-    return res.json({ ok: false, message: "No payment record found" });
-  }
+ if (!payment) {
+  return res.json({ ok: false, message: "No payment record found" });
+}
 
-  if (payment.timerStarted === true) {
-    return res.json({
-      ok: true,
-      message: "Timer already started",
-      remainingSeconds: getLiveRemainingSeconds(payment)
-    });
-  }
-
-  const now = new Date();
-  payment.timerStarted = true;
-  payment.sessionStartedAt = now.toISOString();
-  payment.liveSessionStartedAt = now.toISOString();
-  payment.liveSessionActive = true;
-  payment.liveSessionEndsAt = new Date(
-    now.getTime() + payment.totalSessionSeconds * 1000
-  ).toISOString();
-
-  payment.blandCallId = callId || payment.blandCallId || null;
-
-  console.log("SESSION TIMER STARTED:", {
+if (payment.timerStarted === true) {
+  console.log("SESSION START IGNORED - TIMER ALREADY STARTED:", {
     phone,
     callId,
     sessionType,
-    totalSessionSeconds: payment.totalSessionSeconds,
-    liveSessionStartedAt: payment.liveSessionStartedAt,
     liveSessionEndsAt: payment.liveSessionEndsAt
   });
-
-  scheduleLiveSessionTimers(payment);
 
   return res.json({
     ok: true,
-    message: "Session timer started",
+    already_started: true,
+    timer_started: true,
+    message: "Timer already started",
     totalSessionSeconds: payment.totalSessionSeconds,
     liveSessionStartedAt: payment.liveSessionStartedAt,
-    liveSessionEndsAt: payment.liveSessionEndsAt
+    liveSessionEndsAt: payment.liveSessionEndsAt,
+    remainingSeconds: getLiveRemainingSeconds(payment)
   });
+}
+
+const now = new Date();
+
+payment.timerStarted = true;
+payment.sessionStartedAt = now.toISOString();
+payment.liveSessionStartedAt = now.toISOString();
+payment.liveSessionActive = true;
+payment.liveSessionEndsAt = new Date(
+  now.getTime() + payment.totalSessionSeconds * 1000
+).toISOString();
+
+payment.sessionType = sessionType || payment.sessionType || null;
+payment.blandCallId = callId || payment.blandCallId || null;
+payment.source = req.body.source || payment.source || null;
+
+payment.upsellReminderSent = false;
+payment.fiveMinuteWarningSent = false;
+payment.twoMinuteWarningSent = false;
+payment.wrapUpSent = false;
+payment.sessionComplete = false;
+
+console.log("SESSION TIMER STARTED:", {
+  phone,
+  callId,
+  sessionType,
+  totalSessionSeconds: payment.totalSessionSeconds,
+  liveSessionStartedAt: payment.liveSessionStartedAt,
+  liveSessionEndsAt: payment.liveSessionEndsAt,
+  source: payment.source
+});
+
+scheduleLiveSessionTimers(payment);
+
+return res.json({
+  ok: true,
+  timer_started: true,
+  message: "Session timer started",
+  totalSessionSeconds: payment.totalSessionSeconds,
+  liveSessionStartedAt: payment.liveSessionStartedAt,
+  liveSessionEndsAt: payment.liveSessionEndsAt,
+  remainingSeconds: getLiveRemainingSeconds(payment)
+});
 });
 
 app.post("/bland/upsell-confirmed", async (req, res) => {
@@ -503,40 +528,69 @@ app.post("/bland/upsell-confirmed", async (req, res) => {
       );
     });
 
-  if (!payment) {
-    return res.json({ ok: false, message: "No payment record found" });
-  }
+ if (!payment) {
+  return res.json({ ok: false, message: "No payment record found" });
+}
 
-  // Add 900 seconds (15 minutes) to the session
-  const now = new Date();
-  const currentEndsAt = new Date(payment.liveSessionEndsAt).getTime();
-  const newEndsAt = new Date(currentEndsAt + 900000);
-
-  payment.totalSessionSeconds += 900;
-  payment.upsellSecondsAdded = (payment.upsellSecondsAdded || 0) + 900;
-  payment.liveSessionEndsAt = newEndsAt.toISOString();
-
-  // Reset only two minute and wrap up warnings
-  payment.twoMinuteWarningSent = false;
-  payment.wrapUpSent = false;
-  // Do NOT reset fiveMinuteWarningSent — upsell only happens once
-
-  console.log("UPSELL CONFIRMED - 15 MINUTES ADDED:", {
-    phone,
-    callId,
-    newEndsAt: payment.liveSessionEndsAt,
-    totalSessionSeconds: payment.totalSessionSeconds
-  });
-
-  // Reschedule only two minute warning and wrap up
-  scheduleUpsellTimers(payment);
-
+if (payment.upsellSecondsAdded >= 900) {
   return res.json({
     ok: true,
-    message: "15 minutes added to session",
+    already_added: true,
+    message: "Upsell time already added",
     totalSessionSeconds: payment.totalSessionSeconds,
-    liveSessionEndsAt: payment.liveSessionEndsAt
+    liveSessionEndsAt: payment.liveSessionEndsAt,
+    remainingSeconds: getLiveRemainingSeconds(payment)
   });
+}
+
+if (!payment.liveSessionEndsAt) {
+  return res.json({
+    ok: false,
+    message: "Session timer has not started yet. Cannot add upsell time."
+  });
+}
+
+const currentEndsAt = new Date(payment.liveSessionEndsAt).getTime();
+const newEndsAt = new Date(currentEndsAt + 900000);
+
+payment.totalSessionSeconds += 900;
+payment.upsellSecondsAdded = 900;
+payment.liveSessionEndsAt = newEndsAt.toISOString();
+
+payment.upsellOfferActive = false;
+payment.upsellPaymentPending = false;
+payment.upsellPaymentComplete = true;
+
+payment.twoMinuteWarningSent = false;
+payment.wrapUpSent = false;
+payment.sessionComplete = false;
+
+console.log("UPSELL CONFIRMED - 15 MINUTES ADDED:", {
+  phone,
+  callId,
+  newEndsAt: payment.liveSessionEndsAt,
+  totalSessionSeconds: payment.totalSessionSeconds
+});
+
+scheduleUpsellTimers(payment);
+
+return res.json({
+  ok: true,
+  message: "15 minutes added to session",
+  totalSessionSeconds: payment.totalSessionSeconds,
+  liveSessionEndsAt: payment.liveSessionEndsAt,
+  remainingSeconds: getLiveRemainingSeconds(payment)
+});
+
+scheduleUpsellTimers(payment);
+
+return res.json({
+  ok: true,
+  message: "15 minutes added to session",
+  totalSessionSeconds: payment.totalSessionSeconds,
+  liveSessionEndsAt: payment.liveSessionEndsAt,
+  remainingSeconds: getLiveRemainingSeconds(payment)
+});
 });
 
 app.post("/bland/five-minute-warning", async (req, res) => {
@@ -571,11 +625,12 @@ app.post("/bland/five-minute-warning", async (req, res) => {
     return res.json({ ok: false, message: "No payment record found" });
   }
 
-  payment.fiveMinuteWarningSent = true;
-  payment.upsellOfferActive = true;
-  payment.currentPrompt = "5-MINUTE UPSELL";
-  payment.currentPromptScript = "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes for just $20?";
-  payment.lastPromptType = "five_minute_warning";
+payment.fiveMinuteWarningSent = true;
+payment.upsellReminderSent = true;
+payment.upsellOfferActive = true;
+payment.currentPrompt = "8-MINUTE UPSELL REMINDER";
+payment.currentPromptScript = "You have about 8 minutes left in your session. Would you like to add an additional 15 minutes for $20? Press 1 to add time or press 2 to continue your current session.";
+payment.lastPromptType = "eight_minute_upsell";
   payment.lastPromptAt = new Date().toISOString();
 
   console.log("FIVE MINUTE WARNING FIRED:", { phone, callId });
@@ -779,10 +834,11 @@ app.post("/bland/session-status", async (req, res) => {
       message: "No active paid session found.",
     });
   }
-if (payment.timerStarted !== true || !payment.sessionStartedAt) {
+if (payment.timerStarted !== true || !payment.sessionStartedAt || !payment.liveSessionEndsAt) {
   return res.json({
     active: true,
     paid: true,
+    timer_started: false,
     call_id: payment.callId || callId || null,
     remaining_seconds:
       payment.totalSessionSeconds ||
@@ -795,30 +851,31 @@ if (payment.timerStarted !== true || !payment.sessionStartedAt) {
       payment.sessionSeconds ||
       payment.plan?.seconds ||
       900,
+    eight_minute_upsell_due: false,
     five_minute_warning_due: false,
     two_minute_warning_due: false,
     wrap_up_due: false,
     session_complete: false,
-    timer_started: false,
-    message: "Paid session found, but timer has not started yet.",
+    message: "Paid session found, but timer has not started yet."
   });
 }
 
-  const now = Date.now();
-  const startedAt = new Date(payment.sessionStartedAt).getTime();
-  const totalSessionSeconds =
-    payment.totalSessionSeconds ||
-    payment.sessionSeconds ||
-    payment.plan?.seconds ||
-    900;
+const now = Date.now();
+const startedAt = new Date(payment.sessionStartedAt).getTime();
+const totalSessionSeconds =
+  payment.totalSessionSeconds ||
+  payment.sessionSeconds ||
+  payment.plan?.seconds ||
+  900;
 
   const elapsedSeconds = Math.floor((now - startedAt) / 1000);
   const remainingSeconds = Math.max(totalSessionSeconds - elapsedSeconds, 0);
 
-  const fiveMinuteWarningDue =
-    remainingSeconds <= 300 &&
-    remainingSeconds > 120 &&
-    payment.fiveMinuteWarningSent !== true;
+ const eightMinuteUpsellDue =
+  remainingSeconds <= 480 &&
+  remainingSeconds > 120 &&
+  payment.fiveMinuteWarningSent !== true &&
+  payment.upsellSecondsAdded === 0;
 
   const twoMinuteWarningDue =
     remainingSeconds <= 120 &&
@@ -832,7 +889,10 @@ if (payment.timerStarted !== true || !payment.sessionStartedAt) {
 
   const sessionComplete = remainingSeconds <= 0;
 
-  if (fiveMinuteWarningDue) payment.fiveMinuteWarningSent = true;
+ if (eightMinuteUpsellDue) {
+  payment.fiveMinuteWarningSent = true;
+  payment.upsellReminderSent = true;
+}
   if (twoMinuteWarningDue) payment.twoMinuteWarningSent = true;
   if (wrapUpDue) payment.wrapUpSent = true;
   if (sessionComplete) payment.sessionComplete = true;
@@ -843,7 +903,7 @@ if (payment.timerStarted !== true || !payment.sessionStartedAt) {
     elapsedSeconds,
     remainingSeconds,
     totalSessionSeconds,
-    fiveMinuteWarningDue,
+    eightMinuteUpsellDue,
     twoMinuteWarningDue,
     wrapUpDue,
     sessionComplete,
@@ -856,7 +916,8 @@ if (payment.timerStarted !== true || !payment.sessionStartedAt) {
     remaining_seconds: remainingSeconds,
     elapsed_seconds: elapsedSeconds,
     total_session_seconds: totalSessionSeconds,
-    five_minute_warning_due: fiveMinuteWarningDue,
+    eight_minute_upsell_due: eightMinuteUpsellDue,
+five_minute_warning_due: eightMinuteUpsellDue,
     two_minute_warning_due: twoMinuteWarningDue,
     wrap_up_due: wrapUpDue,
     session_complete: sessionComplete,
@@ -920,7 +981,8 @@ const enqueue = response.enqueue({
   waitUrl: `${process.env.BASE_URL}/twilio/hold-music`,
   waitUrlMethod: "POST",
   action: `${process.env.BASE_URL}/twilio/queue-fallback`,
-  method: "POST"
+  method: "POST",
+  timeout: 180
 });
 
 enqueue.task({
@@ -954,7 +1016,7 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  if (queueTime >= 300) {
+  if (queueTime >= 180) {
     response.say(
       { voice: "Polly.Joanna" },
       "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
@@ -1326,7 +1388,7 @@ function scheduleLiveSessionTimers(payment) {
 
   if (fiveMinuteAt > now && payment.fiveMinuteWarningSent !== true) {
     setTimeout(() => {
-      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "five_minute_upsell");
+      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "eight_minute_upsell");
     }, fiveMinuteAt - now);
   }
 
@@ -1413,18 +1475,22 @@ function fireLiveSessionPrompt(callId, promptType) {
   if (!payment) return;
   if (payment.sessionComplete === true) return;
 
- if (promptType === "five_minute_upsell") {
-    if (payment.fiveMinuteWarningSent === true) return;
-    payment.fiveMinuteWarningSent = true;
-    payment.upsellOfferActive = true;
-    payment.upsellPaymentPending = false;
-    payment.upsellPaymentComplete = false;
+ if (promptType === "eight_minute_upsell") {
+  if (payment.fiveMinuteWarningSent === true) return;
+  if (payment.upsellSecondsAdded > 0) return;
 
-    payment.currentPrompt = "5-MINUTE UPSELL";
-    payment.currentPromptScript = "You have about five minutes remaining in your session. Would you like to add an additional 15 minutes for just $20? Visit lyvvout.com forward slash payment to add more time.";
-    
-    injectBlandSpeech(payment.blandCallId, payment.currentPromptScript);
-  }
+  payment.fiveMinuteWarningSent = true;
+  payment.upsellReminderSent = true;
+  payment.upsellOfferActive = true;
+  payment.upsellPaymentPending = false;
+  payment.upsellPaymentComplete = false;
+
+  payment.currentPrompt = "8-MINUTE UPSELL REMINDER";
+  payment.currentPromptScript =
+    "You have about 8 minutes left in your session. Would you like to add an additional 15 minutes for $20? Press 1 to add time or press 2 to continue your current session.";
+
+  injectBlandSpeech(payment.blandCallId, payment.currentPromptScript);
+}
 
   if (promptType === "two_minute_warning") {
     if (payment.twoMinuteWarningSent === true) return;
@@ -1506,16 +1572,16 @@ async function endLiveSessionCall(callId, reason) {
 
 app.post('/send-payment-sms', async (req, res) => {
   try {
-    const { phone_number, session_length, upsell } = req.body;
+    const { phone_number, upsell } = req.body;
 
     let message = '';
 
     if (upsell === true || upsell === 'true') {
       message =
-        'LyvvOut: You requested a 15-minute session extension. Complete your secure payment here: https://lyvvout.com/payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
+        'LyvvOut: You requested a 15-minute session extension. Complete your secure payment here: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
     } else {
       message =
-        'LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
+        'LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.';
     }
 
     const sms = await twilioClient.messages.create({
