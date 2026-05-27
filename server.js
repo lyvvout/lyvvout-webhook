@@ -174,6 +174,82 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/bland/hours-check", (req, res) => {
+  try {
+    const now = new Date();
+
+    const centralParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Chicago",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    }).formatToParts(now);
+
+    const getPart = (type) =>
+      centralParts.find((part) => part.type === type)?.value;
+
+    const hour = Number(getPart("hour"));
+    const minute = Number(getPart("minute"));
+
+    const minutesSinceMidnight = hour * 60 + minute;
+
+    /*
+      LyvvOut Live Listener Hours:
+      OPEN: 12:00 PM Central through 12:00 AM Central
+      CLOSED: 12:01 AM Central through 11:59 AM Central
+
+      In 24-hour time:
+      12:00 PM = 720 minutes after midnight
+      12:00 AM = 0 minutes after midnight
+    */
+
+    const isOpen =
+      minutesSinceMidnight >= 720 || minutesSinceMidnight === 0;
+
+    const centralTime = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Chicago",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true
+    }).format(now);
+
+    console.log("HOURS CHECK RESULT:", {
+      centralTime,
+      hour,
+      minute,
+      minutesSinceMidnight,
+      isOpen,
+      route: isOpen ? "live_listener" : "ai_fallback"
+    });
+
+    return res.json({
+      ok: true,
+      timezone: "America/Chicago",
+      central_time: centralTime,
+      hour,
+      minute,
+      minutes_since_midnight: minutesSinceMidnight,
+      is_open: isOpen,
+      live_listener_open: isOpen,
+      route: isOpen ? "live_listener" : "ai_fallback",
+      message: isOpen
+        ? "Live listeners are open."
+        : "Live listeners are closed. Route to AI fallback."
+    });
+  } catch (error) {
+    console.error("HOURS CHECK ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      timezone: "America/Chicago",
+      is_open: false,
+      live_listener_open: false,
+      route: "ai_fallback",
+      message: "Hours check failed. Defaulting to AI fallback."
+    });
+  }
+});
+
 // Bland AI calls this after caller presses 1.
 app.post("/bland/check-payment", async (req, res) => {
   console.log("CHECK PAYMENT REQUEST BODY:", req.body);
