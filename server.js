@@ -1078,7 +1078,6 @@ const activeSessionId =
 
 payment.sessionId = activeSessionId;
 
-payment.sessionId = sessionId;
 payment.liveCallSid = callSid;
 payment.liveQueuedAt = payment.liveQueuedAt || new Date().toISOString();
 
@@ -1100,18 +1099,7 @@ console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
   totalSessionSeconds: payment.totalSessionSeconds
 });
 
-const activeSessionId =
-  payment.sessionId ||
-  `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-
-payment.sessionId = sessionId;
-payment.liveCallSid = callSid;
-payment.liveQueuedAt = payment.liveQueuedAt || new Date().toISOString();
-
-payment.callerPhone = payment.customerPhone || from;
-payment.sessionLengthMinutes = 15;
-payment.totalSessionSeconds = payment.totalSessionSeconds || 900;
-
+payment.sessionId = activeSessionId;
 payment.sessionLabel =
   payment.sessionLabel ||
   payment.sessionType ||
