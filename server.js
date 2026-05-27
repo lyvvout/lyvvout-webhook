@@ -1071,9 +1071,12 @@ const enqueue = response.enqueue({
   timeout: 180
 });
 
-const sessionId =
+const activeSessionId =
+  sessionId ||
   payment.sessionId ||
   `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+payment.sessionId = activeSessionId;
 
 payment.sessionId = sessionId;
 payment.liveCallSid = callSid;
@@ -1097,7 +1100,7 @@ console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
   totalSessionSeconds: payment.totalSessionSeconds
 });
 
-const sessionId =
+const activeSessionId =
   payment.sessionId ||
   `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
@@ -1296,10 +1299,10 @@ app.post("/flex/start-live-session", (req, res) => {
     listenerWorkerSid
   } = req.body;
 
-  const payment = findPaymentForFlexStart({
-    sessionId,
-    liveCallSid
-  });
+ const payment = findPaymentForFlexStart({
+  sessionId: activeSessionId,
+  liveCallSid
+});
 
   if (!payment) {
     return res.status(404).json({
@@ -1307,6 +1310,13 @@ app.post("/flex/start-live-session", (req, res) => {
       error: "No matching live session found"
     });
   }
+
+  const activeSessionId =
+  sessionId ||
+  payment.sessionId ||
+  `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+payment.sessionId = activeSessionId;
 
   if (payment.sessionComplete === true) {
     return res.status(400).json({
@@ -1345,7 +1355,7 @@ app.post("/flex/start-live-session", (req, res) => {
   payment.updatedAt = new Date().toISOString();
 
   console.log("LIVE LISTENER ACCEPTED - TIMER STARTED:", {
-    sessionId: payment.sessionId,
+    activeSessionId: payment.activeSessionId,
     liveCallSid: payment.liveCallSid,
     flexTaskSid: payment.flexTaskSid,
     listenerName: payment.listenerName,
@@ -1359,7 +1369,7 @@ app.post("/flex/start-live-session", (req, res) => {
   return res.json({
     ok: true,
     message: "Live session timer started",
-    sessionId: payment.sessionId,
+    activeSessionId: payment.activeSessionId,
     callerName: payment.callerName,
     callerPhone: payment.customerPhone || payment.phone,
     sessionType: payment.sessionType,
@@ -1374,10 +1384,10 @@ app.post("/flex/start-live-session", (req, res) => {
   });
 });
 
-app.get("/flex/session/:sessionId", (req, res) => {
-  const { sessionId } = req.params;
+app.get("/flex/session/:activeSessionId", (req, res) => {
+  const { activeSessionId } = req.params;
 
-  const payment = findPaymentForFlexStart({ sessionId });
+  const payment = findPaymentForFlexStart({ activeSessionId });
 
   if (!payment) {
     return res.status(404).json({
