@@ -1071,16 +1071,58 @@ const enqueue = response.enqueue({
   timeout: 180
 });
 
+const sessionId =
+  payment.sessionId ||
+  `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+payment.sessionId = sessionId;
+payment.liveCallSid = callSid;
+payment.liveQueuedAt = payment.liveQueuedAt || new Date().toISOString();
+
+payment.callerPhone = payment.customerPhone || from;
+payment.sessionLengthMinutes = 15;
+payment.totalSessionSeconds = payment.totalSessionSeconds || 900;
+
+payment.sessionLabel =
+  payment.sessionLabel ||
+  payment.sessionType ||
+  "LyvvOut Session";
+
+console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
+  sessionId,
+  from,
+  callSid,
+  sessionType: payment.sessionType,
+  sessionLabel: payment.sessionLabel,
+  totalSessionSeconds: payment.totalSessionSeconds
+});
+
 enqueue.task({
   priority: "1"
 }, JSON.stringify({
-    type: "inbound",
-    direction: "inbound",
-    from: from,
-    caller_number: from,
-    callSid: callSid,
-    taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622"
-  }));
+  type: "lyvvout_live_session",
+  direction: "inbound",
+
+  sessionId: sessionId,
+  lyvvout_session: true,
+
+  caller_name: payment.callerName || payment.customerName || "Caller",
+  caller_phone: payment.customerPhone || from,
+  caller_number: payment.customerPhone || from,
+
+  session_type: payment.sessionType || "",
+  session_label: payment.sessionLabel || payment.sessionType || "LyvvOut Session",
+
+  session_minutes: 15,
+  session_seconds: payment.totalSessionSeconds || 900,
+
+  paid: true,
+
+  callSid: callSid,
+  liveCallSid: callSid,
+
+  taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622"
+}));
 
   res.type("text/xml");
   return res.send(response.toString());
@@ -1211,59 +1253,11 @@ app.post("/bland/ai-fallback-transfer", (req, res) => {
 });
 
 app.post("/twilio/assignment-callback", async (req, res) => {
-  console.log("ASSIGNMENT CALLBACK:", req.body);
+  console.log("TASKROUTER ASSIGNMENT CALLBACK RECEIVED:", req.body);
 
-  const callSid = req.body.CallSid || req.body.call_sid || "";
-  const taskAttributes = JSON.parse(req.body.TaskAttributes || "{}");
-  const from = taskAttributes.caller_number || taskAttributes.from || "";
-
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return String(value).trim();
-  };
-
-  const phone = normalizePhone(from);
-
-  const payment =
-    payments.get(phone) ||
-    payments.get(callSid) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          p.liveCallSid === callSid
-        )
-      );
-    });
-
-  if (payment && !payment.timerStarted) {
-    const now = new Date();
-    payment.timerStarted = true;
-    payment.liveSessionStartedAt = now.toISOString();
-    payment.sessionStartedAt = now.toISOString();
-    payment.liveSessionActive = true;
-    payment.liveSessionEndsAt = new Date(
-      now.getTime() + payment.totalSessionSeconds * 1000
-    ).toISOString();
-
-    console.log("LIVE AGENT TIMER STARTED:", {
-      phone,
-      callSid,
-      totalSessionSeconds: payment.totalSessionSeconds,
-      liveSessionEndsAt: payment.liveSessionEndsAt
-    });
-
-    scheduleLiveSessionTimers(payment);
-  }
-
-  // Must return this instruction to Twilio to connect the call
-  res.json({
-    instruction: "conference",
-    dequeue_instruction: "conference"
+  return res.json({
+    instruction: "dequeue",
+    post_work_activity_sid: process.env.TWILIO_WRAPUP_ACTIVITY_SID || undefined
   });
 });
 
@@ -1457,7 +1451,7 @@ function scheduleLiveSessionTimers(payment) {
   const now = Date.now();
   const endAt = new Date(payment.liveSessionEndsAt).getTime();
 
-  const fiveMinuteAt = endAt - 5 * 60 * 1000;
+ const eightMinuteAt = endAt - 8 * 60 * 1000;
   const twoMinuteAt = endAt - 2 * 60 * 1000;
   const wrapUpAt = endAt - 30 * 1000;
 
@@ -1466,17 +1460,17 @@ function scheduleLiveSessionTimers(payment) {
     liveCallSid: payment.liveCallSid,
     remainingSeconds: getLiveRemainingSeconds(payment),
     liveSessionEndsAt: payment.liveSessionEndsAt,
-    fiveMinuteInSeconds: Math.max(0, Math.ceil((fiveMinuteAt - now) / 1000)),
+    eightMinuteInSeconds: Math.max(0, Math.ceil((eightMinuteAt - now) / 1000)),
     twoMinuteInSeconds: Math.max(0, Math.ceil((twoMinuteAt - now) / 1000)),
     wrapUpInSeconds: Math.max(0, Math.ceil((wrapUpAt - now) / 1000)),
     endInSeconds: Math.max(0, Math.ceil((endAt - now) / 1000))
   });
 
-  if (fiveMinuteAt > now && payment.fiveMinuteWarningSent !== true) {
-    setTimeout(() => {
-      fireLiveSessionPrompt(payment.callId || payment.customerPhone, "eight_minute_upsell");
-    }, fiveMinuteAt - now);
-  }
+ if (eightMinuteAt > now && payment.fiveMinuteWarningSent !== true) {
+  setTimeout(() => {
+    fireLiveSessionPrompt(payment.callId || payment.customerPhone, "eight_minute_upsell");
+  }, eightMinuteAt - now);
+}
 
   if (twoMinuteAt > now && payment.twoMinuteWarningSent !== true) {
     setTimeout(() => {
