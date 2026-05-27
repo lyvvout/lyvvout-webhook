@@ -563,7 +563,17 @@ console.log("SESSION TIMER STARTED:", {
   source: payment.source
 });
 
-scheduleLiveSessionTimers(payment);
+if (String(payment.source || "").includes("ai_fallback")) {
+  console.log("AI FALLBACK TIMER STARTED - NO BACKEND SPEECH INJECTION:", {
+    phone,
+    callId,
+    sessionType,
+    source: payment.source,
+    liveSessionEndsAt: payment.liveSessionEndsAt
+  });
+} else {
+  scheduleLiveSessionTimers(payment);
+}
 
 return res.json({
   ok: true,
@@ -1550,6 +1560,17 @@ function fireLiveSessionPrompt(callId, promptType) {
 
   if (!payment) return;
   if (payment.sessionComplete === true) return;
+
+  const isAiFallbackSession = String(payment.source || "").includes("ai_fallback");
+
+if (isAiFallbackSession) {
+  console.log("SKIPPING BACKEND BLAND INJECT FOR AI FALLBACK SESSION:", {
+    callId,
+    promptType,
+    source: payment.source
+  });
+  return;
+}
 
  if (promptType === "eight_minute_upsell") {
   if (payment.fiveMinuteWarningSent === true) return;
