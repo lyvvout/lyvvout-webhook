@@ -1695,6 +1695,49 @@ app.post('/send-payment-sms', async (req, res) => {
   }
 });
 
+app.post("/send-survey-sms", async (req, res) => {
+  try {
+    console.log("SURVEY SMS REQUEST:", req.body);
+
+    const { phone_number } = req.body;
+
+    if (!phone_number) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing phone_number"
+      });
+    }
+
+    const message =
+      "LyvvOut: Thank you for calling. Please take 20 seconds to share your experience: https://lyvvout.com/#survey. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
+
+    const sms = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: phone_number
+    });
+
+    console.log("SURVEY SMS SENT:", {
+      to: phone_number,
+      sid: sms.sid
+    });
+
+    return res.json({
+      success: true,
+      sid: sms.sid,
+      message: "Survey SMS sent"
+    });
+  } catch (error) {
+    console.error("SURVEY SMS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Failed to send survey SMS",
+      details: error.message
+    });
+  }
+});
+
 app.post("/twilio/bland-fallback-entry", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
