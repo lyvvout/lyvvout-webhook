@@ -1037,43 +1037,63 @@ console.log("FINAL FLEX CALLER DATA:", {
   sessionLabel: payment.sessionLabel,
   activeSessionId
 });
+console.log("SENDING FINAL TASK ATTRIBUTES TO FLEX:", {
+  activeSessionId,
+  callerName: payment.callerName,
+  customerName: payment.customerName,
+  callerPhone: payment.customerPhone || from,
+  sessionType: payment.sessionType,
+  selectedPersona: payment.selectedPersona,
+  sessionLabel: payment.sessionLabel
+});
 
-enqueue.task({
-  priority: "1"
-}, JSON.stringify({
-  type: "lyvvout_live_session",
-  direction: "inbound",
+enqueue.task(
+  {
+    priority: "1"
+  },
+  JSON.stringify({
+    type: "lyvvout_live_session",
+    direction: "inbound",
+    lyvvout_session: true,
 
-  ssessionId: activeSessionId,
-  lyvvout_session: true,
+    sessionId: activeSessionId,
+    activeSessionId: activeSessionId,
 
-callerName: payment.callerName || payment.customerName || "Not provided",
-customerName: payment.customerName || payment.callerName || "Not provided",
-callerPhone: payment.customerPhone || from,
-customerPhone: payment.customerPhone || from,
+    from: payment.customerPhone || from,
+    caller: payment.customerPhone || from,
+    callerPhone: payment.customerPhone || from,
+    customerPhone: payment.customerPhone || from,
+    caller_phone: payment.customerPhone || from,
+    caller_number: payment.customerPhone || from,
+    customer_number: payment.customerPhone || from,
 
-caller_name: payment.callerName || payment.customerName || "Not provided",
-customer_name: payment.customerName || payment.callerName || "Not provided",
-caller_phone: payment.customerPhone || from,
-caller_number: payment.customerPhone || from,
+    name: payment.callerName || payment.customerName || savedCallerName || "Not provided",
+    callerName: payment.callerName || payment.customerName || savedCallerName || "Not provided",
+    customerName: payment.customerName || payment.callerName || savedCallerName || "Not provided",
+    caller_name: payment.callerName || payment.customerName || savedCallerName || "Not provided",
+    customer_name: payment.customerName || payment.callerName || savedCallerName || "Not provided",
+    displayName: payment.callerName || payment.customerName || savedCallerName || "Not provided",
 
-sessionType: payment.sessionType || payment.selectedPersona || "Not provided",
-sessionLabel: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
+    sessionType: payment.sessionType || payment.selectedPersona || "Not provided",
+    selectedPersona: payment.selectedPersona || payment.sessionType || "Not provided",
+    sessionLabel: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
 
-session_type: payment.sessionType || payment.selectedPersona || "Not provided",
-session_label: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
+    session_type: payment.sessionType || payment.selectedPersona || "Not provided",
+    selected_persona: payment.selectedPersona || payment.sessionType || "Not provided",
+    session_label: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
 
-session_minutes: 15,
-session_seconds: payment.totalSessionSeconds || 900,
-totalSessionSeconds: payment.totalSessionSeconds || 900,
+    session_minutes: 15,
+    session_seconds: payment.totalSessionSeconds || 900,
+    totalSessionSeconds: payment.totalSessionSeconds || 900,
 
-  paid: true,
+    paid: true,
 
-  callSid: callSid,
-  liveCallSid: callSid,
+    callSid: callSid,
+    liveCallSid: callSid,
 
-  taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622"
-}));
+    taskQueueSid: "WQ03762702dcdf88a22fa5587014a64622"
+  })
+);
 
   res.type("text/xml");
   return res.send(response.toString());
@@ -1095,18 +1115,6 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  if (queueTime >= 180) {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
-    );
-
-    response.leave();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
   response.say(
     { voice: "Polly.Joanna" },
     "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
@@ -1117,7 +1125,7 @@ app.post("/twilio/hold-music", (req, res) => {
   response.pause({ length: 1 });
 
   res.type("text/xml");
-  res.send(response.toString());
+  return res.send(response.toString());
 });
 
 // Fires after 300 seconds with no agent answer — sends back to Bland AI
@@ -1206,12 +1214,9 @@ app.post("/bland/ai-fallback-transfer", (req, res) => {
 });
 
 app.post("/twilio/assignment-callback", async (req, res) => {
-  console.log("TASKROUTER ASSIGNMENT CALLBACK RECEIVED:", req.body);
+  console.log("TASKROUTER ASSIGNMENT CALLBACK RECEIVED - NO AUTO DEQUEUE:", req.body);
 
-  return res.json({
-    instruction: "dequeue",
-    post_work_activity_sid: process.env.TWILIO_WRAPUP_ACTIVITY_SID || undefined
-  });
+  return res.status(200).json({});
 });
 
 app.post("/flex/start-live-session", (req, res) => {
@@ -1240,6 +1245,7 @@ app.post("/flex/start-live-session", (req, res) => {
   `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
 payment.sessionId = activeSessionId;
+payment.activeSessionId = activeSessionId;
 
   if (payment.sessionComplete === true) {
     return res.status(400).json({
