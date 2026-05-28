@@ -1257,6 +1257,15 @@ const savedCallerName =
 payment.callerName = savedCallerName;
 payment.customerName = savedCallerName;
 
+console.log("FINAL FLEX CALLER DATA:", {
+  callerName: payment.callerName,
+  customerName: payment.customerName,
+  sessionType: payment.sessionType,
+  selectedPersona: payment.selectedPersona,
+  sessionLabel: payment.sessionLabel,
+  activeSessionId
+});
+
 enqueue.task({
   priority: "1"
 }, JSON.stringify({
