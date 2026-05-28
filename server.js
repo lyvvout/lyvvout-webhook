@@ -1072,7 +1072,6 @@ const enqueue = response.enqueue({
 });
 
 const activeSessionId =
-  sessionId ||
   payment.sessionId ||
   `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
@@ -1091,22 +1090,7 @@ payment.sessionLabel =
   "LyvvOut Session";
 
 console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
-  sessionId,
-  from,
-  callSid,
-  sessionType: payment.sessionType,
-  sessionLabel: payment.sessionLabel,
-  totalSessionSeconds: payment.totalSessionSeconds
-});
-
-payment.sessionId = activeSessionId;
-payment.sessionLabel =
-  payment.sessionLabel ||
-  payment.sessionType ||
-  "LyvvOut Session";
-
-console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
-  sessionId,
+  activeSessionId,
   from,
   callSid,
   sessionType: payment.sessionType,
@@ -1120,7 +1104,7 @@ enqueue.task({
   type: "lyvvout_live_session",
   direction: "inbound",
 
-  sessionId: sessionId,
+  ssessionId: activeSessionId,
   lyvvout_session: true,
 
   caller_name: payment.callerName || payment.customerName || "Caller",
@@ -1288,7 +1272,7 @@ app.post("/flex/start-live-session", (req, res) => {
   } = req.body;
 
  const payment = findPaymentForFlexStart({
-  sessionId: activeSessionId,
+  sessionId,
   liveCallSid
 });
 
