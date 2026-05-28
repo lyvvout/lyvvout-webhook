@@ -1300,7 +1300,6 @@ app.post("/flex/start-live-session", (req, res) => {
   }
 
   const activeSessionId =
-  sessionId ||
   payment.sessionId ||
   `lyvvout_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
