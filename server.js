@@ -19,6 +19,7 @@ const PORT = process.env.PORT || 3000;
 // Temporary in-memory store.
 // Fine for testing. Later use Redis, Supabase, Firebase, or a database.
 const payments = new Map();
+const pendingCallerNames = new Map();
 
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
@@ -478,6 +479,153 @@ app.post("/bland/fallback-session-lookup", async (req, res) => {
     session_type: payment.sessionType || payment.session_type || null,
     timerStarted: payment.timerStarted === true
   });
+});
+
+app.post("/bland/save-caller-name", (req, res) => {
+  try {
+    const { phone, call_id, caller_name } = req.body;
+
+    const normalizePhone = (value) => {
+      if (!value) return "";
+      const digits = String(value).replace(/\D/g, "");
+      if (digits.length === 10) return `+1${digits}`;
+      if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+      return String(value).trim();
+    };
+
+    const normalizedPhone = normalizePhone(phone);
+    const cleanName = String(caller_name || "").trim();
+
+    if (!cleanName) {
+      return res.status(400).json({
+        ok: false,
+        message: "Missing caller_name"
+      });
+    }
+
+    if (call_id) {
+      pendingCallerNames.set(call_id, cleanName);
+    }
+
+    if (normalizedPhone) {
+      pendingCallerNames.set(normalizedPhone, cleanName);
+    }
+
+    const payment =
+      payments.get(normalizedPhone) ||
+      payments.get(call_id) ||
+      [...payments.values()].find((p) => {
+        return (
+          normalizePhone(p.customerPhone) === normalizedPhone ||
+          normalizePhone(p.phone) === normalizedPhone ||
+          p.callId === call_id ||
+          p.blandCallId === call_id
+        );
+      });
+
+    if (payment) {
+      payment.callerName = cleanName;
+      payment.customerName = cleanName;
+      payment.blandCallId = call_id || payment.blandCallId || null;
+    }
+
+    console.log("CALLER NAME SAVED:", {
+      phone: normalizedPhone,
+      call_id,
+      callerName: cleanName,
+      attachedToPayment: !!payment
+    });
+
+    return res.json({
+      ok: true,
+      message: "Caller name saved",
+      callerName: cleanName,
+      attachedToPayment: !!payment
+    });
+  } catch (error) {
+    console.error("SAVE CALLER NAME ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      message: "Failed to save caller name",
+      error: error.message
+    });
+  }
+});
+
+app.post("/bland/save-session-type", (req, res) => {
+  try {
+    const { phone, call_id, session_type } = req.body;
+
+    const normalizePhone = (value) => {
+      if (!value) return "";
+      const digits = String(value).replace(/\D/g, "");
+      if (digits.length === 10) return `+1${digits}`;
+      if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+      return String(value).trim();
+    };
+
+    const normalizedPhone = normalizePhone(phone);
+    const cleanSessionType = String(session_type || "").trim();
+
+    if (!cleanSessionType) {
+      return res.status(400).json({
+        ok: false,
+        message: "Missing session_type"
+      });
+    }
+
+    const payment =
+      payments.get(normalizedPhone) ||
+      payments.get(call_id) ||
+      [...payments.values()].find((p) => {
+        return (
+          normalizePhone(p.customerPhone) === normalizedPhone ||
+          normalizePhone(p.phone) === normalizedPhone ||
+          p.callId === call_id ||
+          p.blandCallId === call_id
+        );
+      });
+
+    if (!payment) {
+      console.log("SESSION TYPE SAVE FAILED - NO PAYMENT RECORD:", {
+        phone,
+        normalizedPhone,
+        call_id,
+        session_type: cleanSessionType
+      });
+
+      return res.status(404).json({
+        ok: false,
+        message: "No payment/session record found to save session type"
+      });
+    }
+
+    payment.sessionType = cleanSessionType;
+    payment.selectedPersona = cleanSessionType;
+    payment.sessionLabel = cleanSessionType;
+    payment.blandCallId = call_id || payment.blandCallId || null;
+
+    console.log("SESSION TYPE SAVED:", {
+      phone: normalizedPhone,
+      call_id,
+      sessionType: payment.sessionType
+    });
+
+    return res.json({
+      ok: true,
+      message: "Session type saved",
+      sessionType: payment.sessionType
+    });
+  } catch (error) {
+    console.error("SAVE SESSION TYPE ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      message: "Failed to save session type",
+      error: error.message
+    });
+  }
 });
 
 app.post("/bland/session-start", async (req, res) => {
@@ -1098,6 +1246,17 @@ console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
   totalSessionSeconds: payment.totalSessionSeconds
 });
 
+const savedCallerName =
+  payment.callerName ||
+  payment.customerName ||
+  pendingCallerNames.get(payment.blandCallId) ||
+  pendingCallerNames.get(payment.callId) ||
+  pendingCallerNames.get(from) ||
+  "Not provided";
+
+payment.callerName = savedCallerName;
+payment.customerName = savedCallerName;
+
 enqueue.task({
   priority: "1"
 }, JSON.stringify({
@@ -1107,15 +1266,25 @@ enqueue.task({
   ssessionId: activeSessionId,
   lyvvout_session: true,
 
-  caller_name: payment.callerName || payment.customerName || "Caller",
-  caller_phone: payment.customerPhone || from,
-  caller_number: payment.customerPhone || from,
+callerName: payment.callerName || payment.customerName || "Not provided",
+customerName: payment.customerName || payment.callerName || "Not provided",
+callerPhone: payment.customerPhone || from,
+customerPhone: payment.customerPhone || from,
 
-  session_type: payment.sessionType || "",
-  session_label: payment.sessionLabel || payment.sessionType || "LyvvOut Session",
+caller_name: payment.callerName || payment.customerName || "Not provided",
+customer_name: payment.customerName || payment.callerName || "Not provided",
+caller_phone: payment.customerPhone || from,
+caller_number: payment.customerPhone || from,
 
-  session_minutes: 15,
-  session_seconds: payment.totalSessionSeconds || 900,
+sessionType: payment.sessionType || payment.selectedPersona || "Not provided",
+sessionLabel: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
+
+session_type: payment.sessionType || payment.selectedPersona || "Not provided",
+session_label: payment.sessionLabel || payment.sessionType || payment.selectedPersona || "LyvvOut Session",
+
+session_minutes: 15,
+session_seconds: payment.totalSessionSeconds || 900,
+totalSessionSeconds: payment.totalSessionSeconds || 900,
 
   paid: true,
 
