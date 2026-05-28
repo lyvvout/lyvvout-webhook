@@ -1350,69 +1350,71 @@ app.post("/twilio/hold-music", (req, res) => {
 
 // Fires after 300 seconds with no agent answer — sends back to Bland AI
 app.post("/twilio/queue-fallback", (req, res) => {
-  const VoiceResponse = require("twilio").twiml.VoiceResponse;
+  const twilio = require("twilio");
+  const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-  const { QueueResult, QueueTime, CallSid, QueueSid } = req.body;
+  const queueResult = String(req.body.QueueResult || "").toLowerCase();
 
-  console.log("Queue fallback/action hit:", {
-    CallSid,
-    QueueSid,
-    QueueResult,
-    QueueTime
-  });
-
-  response.redirect(
-    { method: "POST" },
-    `${process.env.BASE_URL}/bland/fallback`
-  );
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/bland/fallback", (req, res) => {
-  const VoiceResponse = require("twilio").twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  console.log("Bland fallback route hit:", {
+  console.log("QUEUE FALLBACK ACTION HIT:", {
+    QueueResult: req.body.QueueResult,
+    QueueTime: req.body.QueueTime,
+    QueueSid: req.body.QueueSid,
     CallSid: req.body.CallSid,
     From: req.body.From,
     To: req.body.To
   });
 
-  const fallbackNumber = process.env.TWILIO_BLAND_FALLBACK_NUMBER;
+  // These mean the live call was handled or ended normally.
+  // Do NOT send these calls to AI fallback.
+  const doNotFallbackResults = [
+    "bridged",
+    "bridging-in-process",
+    "redirected-from-bridged",
+    "hangup",
+    "leave",
+    "completed"
+  ];
 
-  if (!fallbackNumber) {
-    console.error("Missing TWILIO_BLAND_FALLBACK_NUMBER env variable.");
-
-    response.say(
-      { voice: "Polly.Joanna" },
-      "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
-    );
-
-    response.pause({ length: 60 });
-
-    response.redirect(
-      { method: "POST" },
-      `${process.env.BASE_URL}/bland/fallback`
-    );
+  if (doNotFallbackResults.includes(queueResult)) {
+    console.log("QUEUE ENDED NORMALLY - NO AI FALLBACK:", {
+      queueResult,
+      reason: "Live listener call was bridged, completed, or ended normally."
+    });
 
     res.type("text/xml");
     return res.send(response.toString());
   }
 
-  console.log("Dialing Twilio Bland fallback number:", fallbackNumber);
+  // Only these should route to AI fallback.
+  const shouldFallbackResults = [
+    "timeout",
+    "queue-full",
+    "system-error",
+    "error",
+    "redirected"
+  ];
 
-  const dial = response.dial({
-    answerOnBridge: true,
-    timeout: 45
+  if (!shouldFallbackResults.includes(queueResult)) {
+    console.log("UNKNOWN QUEUE RESULT - DEFAULTING TO NO FALLBACK:", {
+      queueResult
+    });
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  console.log("QUEUE DID NOT CONNECT - ROUTING TO AI FALLBACK:", {
+    queueResult
   });
 
-  dial.number(fallbackNumber);
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/twilio/bland-fallback-entry`
+  );
 
   res.type("text/xml");
-  res.send(response.toString());
+  return res.send(response.toString());
 });
 
 app.post("/bland/ai-fallback-transfer", (req, res) => {
