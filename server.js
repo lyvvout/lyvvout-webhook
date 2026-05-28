@@ -881,16 +881,14 @@ if (payment.timerStarted !== true || !payment.sessionStartedAt || !payment.liveS
   });
 }
 
-const now = Date.now();
-const startedAt = new Date(payment.sessionStartedAt).getTime();
 const totalSessionSeconds =
   payment.totalSessionSeconds ||
   payment.sessionSeconds ||
   payment.plan?.seconds ||
   900;
 
-  const elapsedSeconds = Math.floor((now - startedAt) / 1000);
-  const remainingSeconds = Math.max(totalSessionSeconds - elapsedSeconds, 0);
+const remainingSeconds = getLiveRemainingSeconds(payment);
+const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
 
   const twoMinuteWarningDue =
     remainingSeconds <= 120 &&
@@ -1284,33 +1282,33 @@ payment.activeSessionId = activeSessionId;
   payment.updatedAt = new Date().toISOString();
 
   console.log("LIVE LISTENER ACCEPTED - TIMER STARTED:", {
-    activeSessionId: payment.activeSessionId,
-    liveCallSid: payment.liveCallSid,
-    flexTaskSid: payment.flexTaskSid,
-    listenerName: payment.listenerName,
-    sessionSeconds: payment.totalSessionSeconds,
-    liveSessionStartedAt: payment.liveSessionStartedAt,
-    liveSessionEndsAt: payment.liveSessionEndsAt
-  });
+  activeSessionId: payment.sessionId,
+  liveCallSid: payment.liveCallSid,
+  flexTaskSid: payment.flexTaskSid,
+  listenerName: payment.listenerName,
+  sessionSeconds: payment.totalSessionSeconds,
+  liveSessionStartedAt: payment.liveSessionStartedAt,
+  liveSessionEndsAt: payment.liveSessionEndsAt
+});
 
-  scheduleLiveSessionEndOnly(payment);
+scheduleLiveSessionEndOnly(payment);
 
-   return res.json({
-    ok: true,
-    message: "Live session timer started",
-    activeSessionId: payment.activeSessionId,
-    callerName: payment.callerName,
-    callerPhone: payment.customerPhone || payment.phone,
-    sessionType: payment.sessionType,
-    sessionLabel: payment.sessionLabel,
-    sessionLengthMinutes: payment.sessionLengthMinutes,
-    totalSessionSeconds: payment.totalSessionSeconds,
-    liveSessionStartedAt: payment.liveSessionStartedAt,
-    liveSessionEndsAt: payment.liveSessionEndsAt,
-    remainingSeconds: getLiveRemainingSeconds(payment),
-    currentPrompt: payment.currentPrompt,
-    currentPromptScript: payment.currentPromptScript
-  });
+return res.json({
+  ok: true,
+  message: "Live session timer started",
+  activeSessionId: payment.sessionId,
+  callerName: payment.callerName,
+  callerPhone: payment.customerPhone || payment.phone,
+  sessionType: payment.sessionType,
+  sessionLabel: payment.sessionLabel,
+  sessionLengthMinutes: payment.sessionLengthMinutes,
+  totalSessionSeconds: payment.totalSessionSeconds,
+  liveSessionStartedAt: payment.liveSessionStartedAt,
+  liveSessionEndsAt: payment.liveSessionEndsAt,
+  remainingSeconds: getLiveRemainingSeconds(payment),
+  currentPrompt: payment.currentPrompt,
+  currentPromptScript: payment.currentPromptScript
+});
 });
 
 app.get("/flex/session/:activeSessionId", (req, res) => {
@@ -1385,20 +1383,6 @@ function findPaymentForFlexStart({ sessionId, liveCallSid }) {
 
     return sessionMatches || callMatches;
   });
-}
-
-function getLiveRemainingSeconds(payment) {
-  if (!payment) return 0;
-
-  if (!payment.timerStarted || !payment.liveSessionEndsAt) {
-    return payment.totalSessionSeconds || 0;
-  }
-
-  const endsAt = new Date(payment.liveSessionEndsAt).getTime();
-  const now = Date.now();
-
-  return Math.max(0, Math.ceil((endsAt - now) / 1000));
-
 
 }
 
@@ -1416,7 +1400,7 @@ function getLiveRemainingSeconds(payment) {
 }
 
 function scheduleLiveSessionEndOnly(payment) {
-  if (!payment) return;
+  if (!payment) return; 
   if (!payment.timerStarted) return;
   if (!payment.liveSessionEndsAt) return;
   if (payment.sessionComplete === true) return;
