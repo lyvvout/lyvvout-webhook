@@ -181,16 +181,22 @@ app.post("/bland/hours-check", (req, res) => {
 
     const centralParts = new Intl.DateTimeFormat("en-US", {
       timeZone: "America/Chicago",
-      hour: "numeric",
-      minute: "numeric",
-      hour12: false
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      hourCycle: "h23"
     }).formatToParts(now);
 
     const getPart = (type) =>
       centralParts.find((part) => part.type === type)?.value;
 
-    const hour = Number(getPart("hour"));
+    let hour = Number(getPart("hour"));
     const minute = Number(getPart("minute"));
+
+    // Safety fix in case midnight comes back as 24 instead of 0
+    if (hour === 24) {
+      hour = 0;
+    }
 
     const minutesSinceMidnight = hour * 60 + minute;
 
@@ -202,6 +208,7 @@ app.post("/bland/hours-check", (req, res) => {
       In 24-hour time:
       12:00 PM = 720 minutes after midnight
       12:00 AM = 0 minutes after midnight
+      12:01 AM = 1 minute after midnight
     */
 
     const isOpen =
@@ -214,12 +221,15 @@ app.post("/bland/hours-check", (req, res) => {
       hour12: true
     }).format(now);
 
+    const liveListenerOpen = isOpen ? "true" : "false";
+
     console.log("HOURS CHECK RESULT:", {
       centralTime,
       hour,
       minute,
       minutesSinceMidnight,
       isOpen,
+      live_listener_open: liveListenerOpen,
       route: isOpen ? "live_listener" : "ai_fallback"
     });
 
@@ -227,11 +237,16 @@ app.post("/bland/hours-check", (req, res) => {
       ok: true,
       timezone: "America/Chicago",
       central_time: centralTime,
+      live_hours: "12:00 PM Central Time through 12:00 AM Central Time",
+      closed_hours: "12:01 AM Central Time through 11:59 AM Central Time",
       hour,
       minute,
       minutes_since_midnight: minutesSinceMidnight,
-      is_open: isOpen,
-      live_listener_open: isOpen,
+
+      // Send as string because Bland route condition is using "true" and "false"
+      is_open: liveListenerOpen,
+      live_listener_open: liveListenerOpen,
+
       route: isOpen ? "live_listener" : "ai_fallback",
       message: isOpen
         ? "Live listeners are open."
@@ -243,8 +258,10 @@ app.post("/bland/hours-check", (req, res) => {
     return res.status(500).json({
       ok: false,
       timezone: "America/Chicago",
-      is_open: false,
-      live_listener_open: false,
+      live_hours: "12:00 PM Central Time through 12:00 AM Central Time",
+      closed_hours: "12:01 AM Central Time through 11:59 AM Central Time",
+      is_open: "false",
+      live_listener_open: "false",
       route: "ai_fallback",
       message: "Hours check failed. Defaulting to AI fallback."
     });
