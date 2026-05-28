@@ -1178,7 +1178,7 @@ app.post("/twilio/hold-music", (req, res) => {
     "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
   );
 
-  response.play("http://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3");
+  response.play("https://lyvvout-assets-2042.twil.io/twilio_hold_music.mp3");
 
   response.pause({ length: 1 });
 
