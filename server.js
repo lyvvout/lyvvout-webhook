@@ -21,6 +21,14 @@ const PORT = process.env.PORT || 3000;
 const payments = new Map();
 const pendingCallerNames = new Map();
 
+function normalizePhone(value) {
+  if (!value) return "";
+  const digits = String(value).replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return String(value).trim();
+}
+
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
@@ -376,14 +384,13 @@ app.post("/bland/fallback-session-lookup", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone =
-    req.body.phone ||
-    req.body.from ||
-    req.body.caller_phone ||
-    req.body.callerPhone ||
-    "";
+const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  "";
 
-  const phone = normalizePhone(rawPhone);
+const phone = normalizePhone(rawPhone);
 
   const callId =
     req.body.call_id ||
@@ -681,6 +688,7 @@ payment.blandCallId = callId || payment.blandCallId || null;
 payment.source = req.body.source || payment.source || null;
 
 payment.twoMinuteWarningSent = false;
+payment.surveySmsSent = false;
 payment.sessionComplete = false;
 
 console.log("SESSION TIMER STARTED:", {
@@ -808,7 +816,11 @@ app.post("/flex/call-log", async (req, res) => {
 });
 
 app.post("/bland/session-status", async (req, res) => {
-  console.log("SESSION STATUS REQUEST BODY:", req.body);
+ console.log("SESSION STATUS CHECK:", {
+  phone: req.body.phone || req.body.phone_number || req.body.from,
+  call_id: req.body.call_id || req.body.callId || null,
+  source: req.body.source || null
+});
 
   const normalizePhone = (value) => {
     if (!value) return "";
@@ -859,10 +871,10 @@ app.post("/bland/session-status", async (req, res) => {
   }
 if (payment.timerStarted !== true || !payment.sessionStartedAt || !payment.liveSessionEndsAt) {
   return res.json({
-    active: true,
-    paid: true,
-    timer_started: false,
-    call_id: payment.callId || callId || null,
+  active: !sessionComplete,
+  paid: true,
+  timer_started: payment.timerStarted === true,
+  call_id: payment.callId || callId || null,
     remaining_seconds:
       payment.totalSessionSeconds ||
       payment.sessionSeconds ||
@@ -1427,49 +1439,7 @@ function scheduleLiveSessionEndOnly(payment) {
   }, delay);
 }
 
-async function endLiveSessionCall(callId, reason) {
-  const payment =
-    payments.get(callId) ||
-    [...payments.values()].find(p =>
-      p.callId === callId || p.customerPhone === callId
-    );
 
-  if (!payment) return;
-  if (payment.sessionComplete === true) return;
-
-  payment.sessionComplete = true;
-  payment.liveSessionActive = false;
-  payment.currentPrompt = "SESSION COMPLETE";
-  payment.currentPromptScript = "The paid session time has ended.";
-  payment.completedReason = reason;
-  payment.completedAt = new Date().toISOString();
-  payment.updatedAt = new Date().toISOString();
-
-  console.log("LIVE SESSION ENDING:", {
-    sessionId: payment.sessionId,
-    liveCallSid: payment.liveCallSid,
-    reason
-  });
-
-  if (!payment.liveCallSid) {
-    console.log("No liveCallSid found. Cannot end Twilio call.");
-    return;
-  }
-
-  try {
-    await twilioClient.calls(payment.liveCallSid).update({
-      status: "completed"
-    });
-
-    console.log("TWILIO LIVE CALL ENDED:", {
-      sessionId: payment.sessionId,
-      liveCallSid: payment.liveCallSid,
-      reason
-    });
-  } catch (error) {
-    console.error("FAILED TO END TWILIO LIVE CALL:", error.message);
-  }
-}
 
 async function endLiveSessionCall(callId, reason) {
   const payment =
@@ -1519,9 +1489,15 @@ app.post("/send-payment-sms", async (req, res) => {
   try {
     console.log("PAYMENT SMS REQUEST:", req.body);
 
-    const { phone_number } = req.body;
+const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  "";
 
-    if (!phone_number) {
+const phone_number = normalizePhone(rawPhone);
+
+if (!phone_number) {
       return res.status(400).json({
         success: false,
         error: "Missing phone_number"
@@ -1585,11 +1561,13 @@ app.post("/send-survey-sms", async (req, res) => {
       sid: sms.sid
     });
 
-    return res.json({
-      success: true,
-      sid: sms.sid,
-      message: "Survey SMS sent"
-    });
+  return res.json({
+  success: true,
+  ok: true,
+  sid: sms.sid,
+  survey_sms_sent: true,
+  message: "Survey SMS sent"
+});
   } catch (error) {
     console.error("SURVEY SMS ERROR:", error);
 
