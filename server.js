@@ -142,6 +142,22 @@ if (paymentRecord.callId) {
   payments.set(paymentRecord.callId, paymentRecord);
 }
 
+const pendingName =
+  pendingCallerNames.get(paymentRecord.customerPhone) ||
+  pendingCallerNames.get(callId) ||
+  pendingCallerNames.get(normalizePhone(callId));
+
+if (pendingName) {
+  paymentRecord.callerName = pendingName;
+  paymentRecord.customerName = pendingName;
+  paymentRecord.displayName = pendingName;
+
+  console.log("PENDING CALLER NAME ATTACHED TO PAYMENT:", {
+    phone: paymentRecord.customerPhone,
+    callerName: pendingName
+  });
+}
+
 console.log("Payment confirmed:", paymentRecord);
 
 res.json({ received: true });
@@ -272,7 +288,13 @@ app.post("/bland/check-payment", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone = req.body.phone || req.body.from || "";
+  const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
   const phone = normalizePhone(rawPhone);
 
   const callId =
@@ -342,7 +364,13 @@ app.post("/bland/update-caller-name", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone = req.body.phone || req.body.from || "";
+ const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
   const phone = normalizePhone(rawPhone);
   const callId = req.body.call_id || req.body.callId || "";
   const callerName = req.body.caller_name || req.body.name || "";
@@ -475,7 +503,26 @@ const phone = normalizePhone(rawPhone);
 
 app.post("/bland/save-caller-name", (req, res) => {
   try {
-    const { phone, call_id, caller_name } = req.body;
+    const phone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
+
+const call_id =
+  req.body.call_id ||
+  req.body.callId ||
+  req.body.bland_call_id ||
+  "";
+
+const caller_name =
+  req.body.caller_name ||
+  req.body.callerName ||
+  req.body.customerName ||
+  req.body.name ||
+  "";
 
     const normalizePhone = (value) => {
       if (!value) return "";
@@ -560,6 +607,36 @@ app.post("/bland/save-session-type", (req, res) => {
     const normalizedPhone = normalizePhone(phone);
     const cleanSessionType = String(session_type || "").trim();
 
+const normalizeSessionType = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+
+  const map = {
+    "1": "just_listen",
+    "just listen": "just_listen",
+    "just_listen": "just_listen",
+
+    "2": "react_with_me",
+    "react with me": "react_with_me",
+    "react_with_me": "react_with_me",
+
+    "3": "hype_session",
+    "hype session": "hype_session",
+    "hype_session": "hype_session",
+
+    "4": "keep_it_real",
+    "keep it real": "keep_it_real",
+    "keep_it_real": "keep_it_real",
+
+    "5": "no_filter",
+    "no filter": "no_filter",
+    "no_filter": "no_filter"
+  };
+
+  return map[raw] || raw.replace(/\s+/g, "_");
+};
+
+const normalizedSessionType = normalizeSessionType(cleanSessionType);
+
     if (!cleanSessionType) {
       return res.status(400).json({
         ok: false,
@@ -593,9 +670,9 @@ app.post("/bland/save-session-type", (req, res) => {
       });
     }
 
-    payment.sessionType = cleanSessionType;
-    payment.selectedPersona = cleanSessionType;
-    payment.sessionLabel = cleanSessionType;
+   payment.sessionType = normalizedSessionType;
+payment.selectedPersona = normalizedSessionType;
+payment.sessionLabel = normalizedSessionType;
     payment.blandCallId = call_id || payment.blandCallId || null;
 
     console.log("SESSION TYPE SAVED:", {
@@ -631,7 +708,13 @@ app.post("/bland/session-start", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone = req.body.phone || req.body.from || "";
+ const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
   const phone = normalizePhone(rawPhone);
   const callId = req.body.call_id || req.body.callId || "";
   const sessionType = req.body.session_type || "";
@@ -723,7 +806,13 @@ app.post("/bland/two-minute-warning", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone = req.body.phone || req.body.from || "";
+  const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
   const phone = normalizePhone(rawPhone);
   const callId = req.body.call_id || req.body.callId || "";
 
@@ -830,7 +919,13 @@ app.post("/bland/session-status", async (req, res) => {
     return String(value).trim();
   };
 
-  const rawPhone = req.body.phone || req.body.from || "";
+ const rawPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
   const phone = normalizePhone(rawPhone);
 
   const callId =
@@ -869,23 +964,21 @@ app.post("/bland/session-status", async (req, res) => {
       message: "No active paid session found.",
     });
   }
-if (payment.timerStarted !== true || !payment.sessionStartedAt || !payment.liveSessionEndsAt) {
+if (payment.timerStarted !== true || !payment.liveSessionEndsAt) {
+  const totalSessionSeconds =
+    payment.totalSessionSeconds ||
+    payment.sessionSeconds ||
+    payment.plan?.seconds ||
+    900;
+
   return res.json({
-  active: !sessionComplete,
-  paid: true,
-  timer_started: payment.timerStarted === true,
-  call_id: payment.callId || callId || null,
-    remaining_seconds:
-      payment.totalSessionSeconds ||
-      payment.sessionSeconds ||
-      payment.plan?.seconds ||
-      900,
+    active: true,
+    paid: true,
+    timer_started: payment.timerStarted === true,
+    call_id: payment.callId || callId || null,
+    remaining_seconds: totalSessionSeconds,
     elapsed_seconds: 0,
-    total_session_seconds:
-      payment.totalSessionSeconds ||
-      payment.sessionSeconds ||
-      payment.plan?.seconds ||
-      900,
+    total_session_seconds: totalSessionSeconds,
     two_minute_warning_due: false,
     survey_due: false,
     session_complete: false,
@@ -1031,10 +1124,24 @@ console.log("ENQUEUING FLEX TASK WITH ATTRIBUTES:", {
 const savedCallerName =
   payment.callerName ||
   payment.customerName ||
+  payment.name ||
+  payment.displayName ||
   pendingCallerNames.get(payment.blandCallId) ||
   pendingCallerNames.get(payment.callId) ||
+  pendingCallerNames.get(payment.customerPhone) ||
+  pendingCallerNames.get(payment.phone) ||
+  pendingCallerNames.get(payment.callerPhone) ||
   pendingCallerNames.get(from) ||
+  req.body.callerName ||
+  req.body.caller_name ||
+  req.body.customerName ||
+  req.body.customer_name ||
+  req.body.name ||
   "Not provided";
+
+payment.callerName = savedCallerName;
+payment.customerName = savedCallerName;
+payment.displayName = savedCallerName;
 
 payment.callerName = savedCallerName;
 payment.customerName = savedCallerName;
@@ -1138,70 +1245,76 @@ app.post("/twilio/hold-music", (req, res) => {
   return res.send(response.toString());
 });
 
-// Fires after 300 seconds with no agent answer — sends back to Bland AI
-app.post("/twilio/queue-fallback", (req, res) => {
-  const twilio = require("twilio");
-  const VoiceResponse = twilio.twiml.VoiceResponse;
+app.post("/twilio/bland-fallback-entry", (req, res) => {
+  const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
-  const queueResult = String(req.body.QueueResult || "").toLowerCase();
+  const from = normalizePhone(req.body.From || "");
+  const callSid = req.body.CallSid || "";
 
-  console.log("QUEUE FALLBACK ACTION HIT:", {
-    QueueResult: req.body.QueueResult,
-    QueueTime: req.body.QueueTime,
-    QueueSid: req.body.QueueSid,
-    CallSid: req.body.CallSid,
-    From: req.body.From,
+  console.log("TWILIO BLAND FALLBACK ENTRY HIT:", {
+    CallSid: callSid,
+    From: from,
     To: req.body.To
   });
 
-  // These mean the live call was handled or ended normally.
-  // Do NOT send these calls to AI fallback.
-  const doNotFallbackResults = [
-    "bridged",
-    "bridging-in-process",
-    "redirected-from-bridged",
-    "hangup",
-    "leave",
-    "completed"
-  ];
-
-  if (doNotFallbackResults.includes(queueResult)) {
-    console.log("QUEUE ENDED NORMALLY - NO AI FALLBACK:", {
-      queueResult,
-      reason: "Live listener call was bridged, completed, or ended normally."
+  const payment =
+    payments.get(from) ||
+    payments.get(callSid) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === from ||
+          normalizePhone(p.phone) === from ||
+          normalizePhone(p.callerPhone) === from ||
+          p.liveCallSid === callSid ||
+          p.callId === callSid ||
+          normalizePhone(p.callId) === from
+        )
+      );
     });
+
+  if (payment) {
+    payment.fallbackEntryHitAt = new Date().toISOString();
+    payment.fallbackTwilioCallSid = callSid;
+    payment.liveSessionActive = false;
+    payment.source = "twilio_queue_fallback";
+  }
+
+  const blandFallbackNumber = process.env.BLAND_FALLBACK_PHONE_NUMBER;
+
+  if (!blandFallbackNumber) {
+    console.error("MISSING BLAND_FALLBACK_PHONE_NUMBER ENV VARIABLE");
+
+    response.say(
+      { voice: "Polly.Joanna" },
+      "I am sorry. We were unable to connect you to a listener. Please call LyvvOut again."
+    );
+    response.hangup();
 
     res.type("text/xml");
     return res.send(response.toString());
   }
 
-  // Only these should route to AI fallback.
-  const shouldFallbackResults = [
-    "timeout",
-    "queue-full",
-    "system-error",
-    "error",
-    "redirected"
-  ];
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you for holding. I am connecting you to your listener now."
+  );
 
-  if (!shouldFallbackResults.includes(queueResult)) {
-    console.log("UNKNOWN QUEUE RESULT - DEFAULTING TO NO FALLBACK:", {
-      queueResult
-    });
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  console.log("QUEUE DID NOT CONNECT - ROUTING TO AI FALLBACK:", {
-    queueResult
+  const dial = response.dial({
+    answerOnBridge: true,
+    timeout: 20
   });
 
-  response.redirect(
-    { method: "POST" },
-    `${process.env.BASE_URL}/twilio/bland-fallback-entry`
-  );
+  dial.number(blandFallbackNumber);
+
+  console.log("DIALING BLAND FALLBACK NUMBER:", {
+    from,
+    callSid,
+    blandFallbackNumber,
+    foundPayment: !!payment
+  });
 
   res.type("text/xml");
   return res.send(response.toString());
@@ -1280,12 +1393,13 @@ payment.activeSessionId = activeSessionId;
 
   const now = new Date();
 
-  payment.timerStarted = true;
-  payment.liveSessionActive = true;
-  payment.liveSessionStartedAt = now.toISOString();
-  payment.liveSessionEndsAt = new Date(
-    now.getTime() + payment.totalSessionSeconds * 1000
-  ).toISOString();
+ payment.timerStarted = true;
+payment.liveSessionActive = true;
+payment.liveSessionStartedAt = now.toISOString();
+payment.sessionStartedAt = now.toISOString();
+payment.liveSessionEndsAt = new Date(
+  now.getTime() + payment.totalSessionSeconds * 1000
+).toISOString();
 
   payment.currentPrompt = "LIVE SESSION STARTED";
   payment.currentPromptScript =
@@ -1412,7 +1526,7 @@ function getLiveRemainingSeconds(payment) {
 }
 
 function scheduleLiveSessionEndOnly(payment) {
-  if (!payment) return; 
+  if (!payment) return;
   if (!payment.timerStarted) return;
   if (!payment.liveSessionEndsAt) return;
   if (payment.sessionComplete === true) return;
@@ -1423,7 +1537,7 @@ function scheduleLiveSessionEndOnly(payment) {
   const delay = endAt - now;
 
   if (delay <= 0) {
-    endLiveSessionCall(payment.callId || payment.customerPhone, "paid_time_expired");
+    endLiveSessionCall(payment.liveCallSid, "paid_time_expired");
     return;
   }
 
@@ -1435,21 +1549,35 @@ function scheduleLiveSessionEndOnly(payment) {
   });
 
   setTimeout(() => {
-    endLiveSessionCall(payment.callId || payment.customerPhone, "paid_time_expired");
+    endLiveSessionCall(payment.liveCallSid, "paid_time_expired");
   }, delay);
 }
 
-
-
-async function endLiveSessionCall(callId, reason) {
+async function endLiveSessionCall(identifier, reason) {
   const payment =
-    payments.get(callId) ||
+    payments.get(identifier) ||
     [...payments.values()].find(p =>
-      p.callId === callId || p.customerPhone === callId
+      p.callId === identifier ||
+      p.customerPhone === identifier ||
+      p.phone === identifier ||
+      p.callerPhone === identifier ||
+      p.liveCallSid === identifier ||
+      p.sessionId === identifier ||
+      p.activeSessionId === identifier
     );
 
-  if (!payment) return;
-  if (payment.sessionComplete === true) return;
+  if (!payment) {
+    console.log("END LIVE SESSION: NO PAYMENT FOUND", { identifier, reason });
+    return;
+  }
+
+  if (payment.sessionComplete === true) {
+    console.log("END LIVE SESSION: ALREADY COMPLETE", {
+      sessionId: payment.sessionId,
+      liveCallSid: payment.liveCallSid
+    });
+    return;
+  }
 
   payment.sessionComplete = true;
   payment.liveSessionActive = false;
@@ -1471,7 +1599,7 @@ async function endLiveSessionCall(callId, reason) {
   }
 
   try {
-   await twilioClient.calls(payment.liveCallSid).update({
+    await twilioClient.calls(payment.liveCallSid).update({
       status: "completed"
     });
 
@@ -1538,14 +1666,22 @@ app.post("/send-survey-sms", async (req, res) => {
   try {
     console.log("SURVEY SMS REQUEST:", req.body);
 
-    const { phone_number } = req.body;
+  const rawSurveyPhone =
+  req.body.phone_number ||
+  req.body.phone ||
+  req.body.from ||
+  req.body.callerPhone ||
+  req.body.customerPhone ||
+  "";
 
-    if (!phone_number) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing phone_number"
-      });
-    }
+const phone_number = normalizePhone(rawSurveyPhone);
+
+if (!phone_number) {
+  return res.status(400).json({
+    success: false,
+    error: "Missing phone_number"
+  });
+}
 
     const message =
       "LyvvOut: Thank you for calling. Please take 20 seconds to share your experience: https://lyvvout.com/#survey. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
