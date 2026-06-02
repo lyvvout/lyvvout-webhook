@@ -1245,6 +1245,122 @@ app.post("/twilio/hold-music", (req, res) => {
   return res.send(response.toString());
 });
 
+app.post("/twilio/queue-fallback", (req, res) => {
+  const twilio = require("twilio");
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const queueResult = String(req.body.QueueResult || "").toLowerCase();
+  const queueTime = parseInt(req.body.QueueTime || "0", 10);
+  const callSid = req.body.CallSid || "";
+  const from = normalizePhone(req.body.From || "");
+
+  console.log("QUEUE FALLBACK ACTION HIT:", {
+    QueueResult: req.body.QueueResult,
+    QueueTime: req.body.QueueTime,
+    QueueSid: req.body.QueueSid,
+    CallSid: callSid,
+    From: from,
+    To: req.body.To
+  });
+
+  const payment =
+    payments.get(from) ||
+    payments.get(callSid) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === from ||
+          normalizePhone(p.phone) === from ||
+          normalizePhone(p.callerPhone) === from ||
+          p.liveCallSid === callSid ||
+          p.callId === callSid ||
+          normalizePhone(p.callId) === from
+        )
+      );
+    });
+
+  const liveSessionAlreadyStarted =
+    payment &&
+    (
+      payment.timerStarted === true ||
+      !!payment.liveSessionStartedAt ||
+      payment.liveSessionActive === true
+    );
+
+  console.log("QUEUE FALLBACK PAYMENT CHECK:", {
+    foundPayment: !!payment,
+    liveSessionAlreadyStarted,
+    queueResult,
+    queueTime,
+    liveCallSid: payment?.liveCallSid || null,
+    sessionId: payment?.sessionId || null
+  });
+
+  const liveHandledResults = [
+    "bridged",
+    "bridging-in-process",
+    "completed"
+  ];
+
+  if (liveHandledResults.includes(queueResult) || liveSessionAlreadyStarted) {
+    console.log("QUEUE ENDED AFTER LIVE LISTENER CONNECTION - NO AI FALLBACK:", {
+      queueResult,
+      queueTime,
+      liveSessionAlreadyStarted
+    });
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  const shouldFallback =
+    queueResult === "timeout" ||
+    queueResult === "queue-full" ||
+    queueResult === "system-error" ||
+    queueResult === "error" ||
+    queueResult === "redirected" ||
+    (
+      queueResult === "leave" &&
+      queueTime >= 175 &&
+      !liveSessionAlreadyStarted
+    );
+
+  if (!shouldFallback) {
+    console.log("QUEUE ENDED WITHOUT FALLBACK:", {
+      queueResult,
+      queueTime,
+      reason: "Queue result did not meet fallback conditions."
+    });
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  if (payment) {
+    payment.queueFallbackTriggeredAt = new Date().toISOString();
+    payment.queueFallbackReason = queueResult || "queue_timeout";
+    payment.liveSessionActive = false;
+    payment.fallbackRequested = true;
+  }
+
+  console.log("QUEUE DID NOT CONNECT - ROUTING TO AI FALLBACK:", {
+    queueResult,
+    queueTime,
+    from,
+    callSid
+  });
+
+  response.redirect(
+    { method: "POST" },
+    `${process.env.BASE_URL}/twilio/bland-fallback-entry`
+  );
+
+  res.type("text/xml");
+  return res.send(response.toString());
+});
+
 app.post("/twilio/bland-fallback-entry", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
@@ -1715,24 +1831,6 @@ if (!phone_number) {
   }
 });
 
-app.post("/twilio/bland-fallback-entry", (req, res) => {
-  const VoiceResponse = require("twilio").twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  console.log("Twilio Bland fallback entry hit:", {
-    CallSid: req.body.CallSid,
-    From: req.body.From,
-    To: req.body.To
-  });
-
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
-  );
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
 
 app.listen(PORT, () => {
   console.log(`LyvvOut webhook server running on port ${PORT}`);
