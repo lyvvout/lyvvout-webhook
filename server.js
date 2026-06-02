@@ -1232,14 +1232,32 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Thank you for holding. All of our listeners are currently with other clients. We will connect you shortly to another dedicated listener."
+  // Safety fallback: if Twilio does not end the Enqueue at 180 seconds,
+  // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
+  if (queueTime >= 175) {
+    console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
+      CallSid: req.body.CallSid,
+      QueueSid: req.body.QueueSid,
+      QueueTime: queueTime
+    });
+
+    response.leave();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  if (queueTime === 0) {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "Thank you for holding. A dedicated listener will be with you shortly."
+    );
+  }
+
+  response.play(
+    { loop: 1 },
+    "https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3"
   );
-
-  response.play("https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3");
-
-  response.pause({ length: 1 });
 
   res.type("text/xml");
   return res.send(response.toString());
