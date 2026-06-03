@@ -1007,7 +1007,7 @@ const {
   const time = now.toLocaleTimeString('en-US');
 
   try {
-    const response = await fetch('https://api.airtable.com/v0/appIvLuxW2Kvl5QTs/tbloznx9BU9P37vIp', {
+    const response = await fetch('https://api.airtable.com/v0/appruXeM9l3bA1gf0/tblJVPDR5f2hMiZQT', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
