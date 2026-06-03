@@ -1120,8 +1120,8 @@ const remainingSeconds = getLiveRemainingSeconds(payment);
 const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
 
 const twoMinuteWarningDue =
-  remainingSeconds <= 150 &&
-  remainingSeconds > 60 &&
+  remainingSeconds <= 210 &&
+  remainingSeconds > 120 &&
   payment.twoMinuteWarningSent !== true;
 
 const surveyDue =
