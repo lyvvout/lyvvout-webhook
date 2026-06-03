@@ -29,6 +29,98 @@ function normalizePhone(value) {
   return String(value).trim();
 }
 
+function isTemplateValue(value) {
+  const text = String(value || "");
+  return text.includes("{{") || text.includes("}}");
+}
+
+function findMostRecentFallbackPayment() {
+  const fallbackPayments = [...payments.values()]
+    .filter((p) => {
+      return (
+        p &&
+        p.paid === true &&
+        p.sessionComplete !== true &&
+        (
+          p.fallbackRequested === true ||
+          p.source === "twilio_queue_fallback" ||
+          p.fallbackEntryHitAt ||
+          p.queueFallbackTriggeredAt
+        )
+      );
+    })
+    .sort((a, b) => {
+      const aTime = new Date(
+        a.fallbackEntryHitAt ||
+        a.queueFallbackTriggeredAt ||
+        a.updatedAt ||
+        a.paidAt ||
+        0
+      ).getTime();
+
+      const bTime = new Date(
+        b.fallbackEntryHitAt ||
+        b.queueFallbackTriggeredAt ||
+        b.updatedAt ||
+        b.paidAt ||
+        0
+      ).getTime();
+
+      return bTime - aTime;
+    });
+
+  return fallbackPayments[0] || null;
+}
+
+function findPaymentForBlandTimer(req) {
+  const rawPhone =
+    req.body.phone_number ||
+    req.body.phone ||
+    req.body.from ||
+    req.body.callerPhone ||
+    req.body.customerPhone ||
+    "";
+
+  const rawCallId =
+    req.body.call_id ||
+    req.body.callId ||
+    req.body.bland_call_id ||
+    "";
+
+  const phone = isTemplateValue(rawPhone) ? "" : normalizePhone(rawPhone);
+  const callId = isTemplateValue(rawCallId) ? "" : String(rawCallId || "");
+
+  let payment =
+    (phone && payments.get(phone)) ||
+    (callId && payments.get(callId)) ||
+    [...payments.values()].find((p) => {
+      return (
+        p &&
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          normalizePhone(p.callerPhone) === phone ||
+          p.callId === callId ||
+          p.blandCallId === callId ||
+          p.fallbackBlandCallId === callId
+        )
+      );
+    });
+
+  if (!payment && isTemplateValue(rawPhone)) {
+    payment = findMostRecentFallbackPayment();
+  }
+
+  return {
+    payment,
+    phone,
+    callId,
+    rawPhone,
+    rawCallId
+  };
+}
+
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
@@ -698,101 +790,119 @@ payment.sessionLabel = normalizedSessionType;
 });
 
 app.post("/bland/session-start", async (req, res) => {
-  console.log("SESSION START REQUEST:", req.body);
-
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return String(value).trim();
-  };
-
- const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
-  const phone = normalizePhone(rawPhone);
-  const callId = req.body.call_id || req.body.callId || "";
-  const sessionType = req.body.session_type || "";
-
-  const payment =
-    payments.get(phone) ||
-    payments.get(callId) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          p.callId === callId
-        )
-      );
-    });
-
- if (!payment) {
-  return res.json({ ok: false, message: "No payment record found" });
-}
-
-if (payment.timerStarted === true) {
-  console.log("SESSION START IGNORED - TIMER ALREADY STARTED:", {
+  const {
+    payment,
     phone,
     callId,
-    sessionType,
-    liveSessionEndsAt: payment.liveSessionEndsAt
+    rawPhone,
+    rawCallId
+  } = findPaymentForBlandTimer(req);
+
+  console.log("SESSION START REQUEST:", {
+    rawPhone,
+    phone,
+    rawCallId,
+    callId,
+    source: req.body.source,
+    foundPayment: !!payment
+  });
+
+  if (!payment) {
+    return res.status(404).json({
+      ok: false,
+      paid: false,
+      timer_started: false,
+      error: "No active paid session found."
+    });
+  }
+
+  const now = new Date();
+
+  const totalSessionSeconds =
+    payment.totalSessionSeconds ||
+    payment.sessionSeconds ||
+    payment.plan?.seconds ||
+    900;
+
+  if (payment.timerStarted === true && payment.liveSessionEndsAt) {
+    console.log("SESSION START IGNORED - TIMER ALREADY STARTED:", {
+      phone,
+      callId,
+      liveSessionEndsAt: payment.liveSessionEndsAt
+    });
+
+    return res.json({
+      ok: true,
+      already_started: true,
+      paid: true,
+      active: true,
+      timer_started: true,
+      message: "Timer already started",
+      call_id: payment.callId || callId || payment.customerPhone,
+      session_id: payment.sessionId || payment.activeSessionId || null,
+      remaining_seconds: getLiveRemainingSeconds(payment),
+      total_session_seconds: totalSessionSeconds,
+      liveSessionStartedAt:
+        payment.liveSessionStartedAt ||
+        payment.aiSessionStartedAt ||
+        payment.sessionStartedAt,
+      liveSessionEndsAt: payment.liveSessionEndsAt,
+      session_complete: payment.sessionComplete === true
+    });
+  }
+
+  payment.timerStarted = true;
+  payment.liveSessionActive = false;
+  payment.aiSessionActive = true;
+
+  payment.sessionStartedAt = payment.sessionStartedAt || now.toISOString();
+  payment.aiSessionStartedAt = payment.aiSessionStartedAt || now.toISOString();
+  payment.liveSessionStartedAt = payment.liveSessionStartedAt || now.toISOString();
+
+  payment.liveSessionEndsAt = new Date(
+    now.getTime() + totalSessionSeconds * 1000
+  ).toISOString();
+
+  payment.totalSessionSeconds = totalSessionSeconds;
+  payment.sessionSeconds = totalSessionSeconds;
+
+  payment.twoMinuteWarningSent = false;
+  payment.surveySmsSent = false;
+  payment.sessionComplete = false;
+
+  payment.source = req.body.source || payment.source || "ai_fallback";
+  payment.updatedAt = now.toISOString();
+
+  if (callId) {
+    payment.fallbackBlandCallId = callId;
+    payment.blandCallId = callId;
+  }
+
+  console.log("AI/FALLBACK SESSION TIMER STARTED:", {
+    customerPhone: payment.customerPhone,
+    sessionId: payment.sessionId,
+    callId,
+    totalSessionSeconds,
+    sessionStartedAt: payment.sessionStartedAt,
+    aiSessionStartedAt: payment.aiSessionStartedAt,
+    liveSessionEndsAt: payment.liveSessionEndsAt,
+    source: payment.source
   });
 
   return res.json({
     ok: true,
-    already_started: true,
+    paid: true,
+    active: true,
     timer_started: true,
-    message: "Timer already started",
-    totalSessionSeconds: payment.totalSessionSeconds,
+    message: "Timer started.",
+    call_id: payment.callId || callId || payment.customerPhone,
+    session_id: payment.sessionId || payment.activeSessionId || null,
+    remaining_seconds: totalSessionSeconds,
+    total_session_seconds: totalSessionSeconds,
     liveSessionStartedAt: payment.liveSessionStartedAt,
     liveSessionEndsAt: payment.liveSessionEndsAt,
-    remainingSeconds: getLiveRemainingSeconds(payment)
+    session_complete: false
   });
-}
-
-const now = new Date();
-
-payment.timerStarted = true;
-payment.sessionStartedAt = now.toISOString();
-payment.liveSessionStartedAt = now.toISOString();
-payment.liveSessionActive = true;
-payment.liveSessionEndsAt = new Date(
-  now.getTime() + payment.totalSessionSeconds * 1000
-).toISOString();
-
-payment.sessionType = sessionType || payment.sessionType || null;
-payment.blandCallId = callId || payment.blandCallId || null;
-payment.source = req.body.source || payment.source || null;
-
-payment.twoMinuteWarningSent = false;
-payment.surveySmsSent = false;
-payment.sessionComplete = false;
-
-console.log("SESSION TIMER STARTED:", {
-  phone,
-  callId,
-  sessionType,
-  totalSessionSeconds: payment.totalSessionSeconds,
-  liveSessionStartedAt: payment.liveSessionStartedAt,
-  liveSessionEndsAt: payment.liveSessionEndsAt,
-  source: payment.source
-});
-
-return res.json({
-  ok: true,
-  timer_started: true,
-  message: "Session timer started",
-  totalSessionSeconds: payment.totalSessionSeconds,
-  liveSessionStartedAt: payment.liveSessionStartedAt,
-  liveSessionEndsAt: payment.liveSessionEndsAt,
-  remainingSeconds: getLiveRemainingSeconds(payment)
-});
 });
 
 app.post("/bland/two-minute-warning", async (req, res) => {
@@ -905,65 +1015,37 @@ app.post("/flex/call-log", async (req, res) => {
 });
 
 app.post("/bland/session-status", async (req, res) => {
- console.log("SESSION STATUS CHECK:", {
-  phone: req.body.phone || req.body.phone_number || req.body.from,
-  call_id: req.body.call_id || req.body.callId || null,
-  source: req.body.source || null
+const {
+  payment,
+  phone,
+  callId,
+  rawPhone,
+  rawCallId
+} = findPaymentForBlandTimer(req);
+
+console.log("SESSION STATUS CHECK:", {
+  rawPhone,
+  phone,
+  rawCallId,
+  callId,
+  source: req.body.source,
+  foundPayment: !!payment
 });
 
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return String(value).trim();
-  };
-
- const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
-  const phone = normalizePhone(rawPhone);
-
-  const callId =
-    req.body.call_id ||
-    req.body.callId ||
-    req.body.client_reference_id ||
-    "";
-
-  const normalizedCallId = normalizePhone(callId);
-
-  const payment =
-    payments.get(phone) ||
-    payments.get(callId) ||
-    payments.get(normalizedCallId) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          normalizePhone(p.phone) === phone ||
-          p.callId === callId ||
-          normalizePhone(p.callId) === normalizedCallId ||
-          normalizePhone(p.callId) === phone
-        )
-      );
-    });
-
-  if (!payment || payment.paid !== true) {
-    return res.json({
-      active: false,
-      paid: false,
-      remaining_seconds: 0,
-      two_minute_warning_due: false,
-      survey_due: false,
-      session_complete: false,
-      message: "No active paid session found.",
-    });
-  }
+if (!payment || payment.paid !== true) {
+  return res.status(404).json({
+    active: false,
+    paid: false,
+    timer_started: false,
+    remaining_seconds: 0,
+    elapsed_seconds: 0,
+    total_session_seconds: 0,
+    two_minute_warning_due: false,
+    survey_due: false,
+    session_complete: true,
+    message: "No active paid session found."
+  });
+}
 if (payment.timerStarted !== true || !payment.liveSessionEndsAt) {
   const totalSessionSeconds =
     payment.totalSessionSeconds ||
