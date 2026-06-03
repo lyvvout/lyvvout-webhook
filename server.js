@@ -29,6 +29,22 @@ function normalizePhone(value) {
   return String(value).trim();
 }
 
+function formatSessionTypeForAirtable(value) {
+  const normalized = String(value || "").toLowerCase().trim();
+
+  const labels = {
+    just_listen: "Just Listen",
+    react_with_me: "React With Me",
+    hype_session: "Hype Session",
+    keep_it_real: "Keep It Real",
+    no_filter: "No Filter",
+    not_provided: "Not Provided",
+    "not provided": "Not Provided"
+  };
+
+  return labels[normalized] || value || "Not Provided";
+}
+
 function isTemplateValue(value) {
   const text = String(value || "");
   return text.includes("{{") || text.includes("}}");
@@ -577,20 +593,35 @@ const phone = normalizePhone(rawPhone);
     paid: payment.paid
   });
 
-  return res.json({
-    ok: true,
-    paid: true,
-    paymentStatus: "paid",
-    message: "Paid session found.",
-    call_id: payment.callId || callId || null,
-    bland_call_id: callId || null,
-    customerPhone: payment.customerPhone || payment.phone || phone,
-    session_length: sessionLength,
-    session_seconds: sessionSeconds,
-    total_session_seconds: sessionSeconds,
-    session_type: payment.sessionType || payment.session_type || null,
-    timerStarted: payment.timerStarted === true
-  });
+ return res.json({
+  ok: true,
+  paid: true,
+  paymentStatus: "paid",
+  message: "Paid session found.",
+
+  call_id: payment.callId || callId || payment.customerPhone || phone || null,
+  bland_call_id: callId || payment.fallbackBlandCallId || null,
+
+  customerPhone: payment.customerPhone || payment.phone || phone,
+  customer_phone: payment.customerPhone || payment.phone || phone,
+
+  session_length: sessionLength,
+  session_seconds: sessionSeconds,
+  total_session_seconds: sessionSeconds,
+
+  session_type:
+    payment.sessionType ||
+    payment.session_type ||
+    payment.selectedPersona ||
+    "no_filter",
+
+  selected_persona:
+    payment.selectedPersona ||
+    payment.sessionType ||
+    "no_filter",
+
+  timerStarted: payment.timerStarted === true
+});
 });
 
 app.post("/bland/save-caller-name", (req, res) => {
@@ -958,18 +989,18 @@ app.post("/bland/two-minute-warning", async (req, res) => {
 app.post("/flex/call-log", async (req, res) => {
   console.log("CALL LOG REQUEST:", req.body);
 
-  const {
-    listener_name,
-    caller_phone,
-    session_type,
-    session_length,
-    self_harm_mentioned,
-    threats_made,
-    terms_violated,
-    abusive_language,
-    emergency_services_needed,
-    notes
-  } = req.body;
+const {
+  listener_name,
+  caller_phone,
+  session_type,
+  self_harm_mentioned,
+  threats_made,
+  terms_violated,
+  abusive_language,
+  emergency_services_needed,
+  call_had_no_issues,
+  notes
+} = req.body;
 
   const now = new Date();
   const date = now.toLocaleDateString('en-US');
@@ -983,19 +1014,30 @@ app.post("/flex/call-log", async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        fields: {
-  'Incident Report ID': caller_phone || '',
-  'Date': date,
-  'Time': time,
-  'Listener Name': listener_name || '',
-  'Session Type': session_type || '',
-  'Session Length': session_length || '',
-  'Did the caller express thoughts of self harm?': self_harm_mentioned === true || self_harm_mentioned === 'true',
-  'Did the caller make any threats?': threats_made === true || threats_made === 'true',
-  'Did the caller violate the terms and conditions?': terms_violated === true || terms_violated === 'true',
-  'Did the caller use abusive or threatening language towards the listener?': abusive_language === true || abusive_language === 'true',
-  'Was law enforcement or emergency services needed?': emergency_services_needed === true || emergency_services_needed === 'true',
-  'Additional Notes': notes || ''
+fields: {
+  "Listener Name": listener_name || "",
+  "Caller Phone": caller_phone || "",
+  "Session Type": formatSessionTypeForAirtable(session_type),
+
+  "Did the caller express thoughts of self harm?":
+    self_harm_mentioned === true || self_harm_mentioned === "true",
+
+  "Did the caller make any threats?":
+    threats_made === true || threats_made === "true",
+
+  "Did the caller violate the terms and conditions?":
+    terms_violated === true || terms_violated === "true",
+
+  "Did the caller use abusive or threatening language towards the listener?":
+    abusive_language === true || abusive_language === "true",
+
+  "Was law enforcement or emergency services needed?":
+    emergency_services_needed === true || emergency_services_needed === "true",
+
+  "Call Had No Issues":
+    call_had_no_issues === true || call_had_no_issues === "true",
+
+  "Additional Notes": notes || ""
 }
       })
     });
@@ -1077,13 +1119,13 @@ const totalSessionSeconds =
 const remainingSeconds = getLiveRemainingSeconds(payment);
 const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
 
-  const twoMinuteWarningDue =
-    remainingSeconds <= 120 &&
-    remainingSeconds > 30 &&
-    payment.twoMinuteWarningSent !== true;
+const twoMinuteWarningDue =
+  remainingSeconds <= 150 &&
+  remainingSeconds > 60 &&
+  payment.twoMinuteWarningSent !== true;
 
- const surveyDue =
-  remainingSeconds <= 30 &&
+const surveyDue =
+  remainingSeconds <= 75 &&
   remainingSeconds > 0 &&
   payment.surveySmsSent !== true;
 
@@ -1824,9 +1866,58 @@ async function endLiveSessionCall(identifier, reason) {
       liveCallSid: payment.liveCallSid,
       reason
     });
+
+    try {
+  await sendLiveListenerSurveySms(payment);
+} catch (smsError) {
+  console.error("LIVE LISTENER SURVEY SMS ERROR:", smsError);
+}
+
   } catch (error) {
     console.error("FAILED TO END TWILIO LIVE CALL:", error.message);
   }
+}
+async function sendLiveListenerSurveySms(payment) {
+  const to =
+    payment.customerPhone ||
+    payment.phone ||
+    payment.callerPhone ||
+    payment.caller_phone;
+
+  if (!to) {
+    console.warn("LIVE SURVEY SMS SKIPPED - NO CUSTOMER PHONE", payment);
+    return { success: false, error: "Missing customer phone" };
+  }
+
+  if (payment.liveSurveySmsSent === true) {
+    console.log("LIVE SURVEY SMS SKIPPED - ALREADY SENT", { to });
+    return { success: true, already_sent: true };
+  }
+
+  const from =
+    process.env.TWILIO_LIVE_LISTENER_NUMBER ||
+    process.env.TWILIO_PHONE_NUMBER;
+
+  const message =
+    "LyvvOut: Thank you for sharing this space with us. Please take 20 seconds to share your experience: https://lyvvout.com/#survey";
+
+  const sms = await twilioClient.messages.create({
+    to,
+    from,
+    body: message
+  });
+
+  payment.liveSurveySmsSent = true;
+  payment.liveSurveySmsSid = sms.sid;
+  payment.liveSurveySmsSentAt = new Date().toISOString();
+
+  console.log("LIVE LISTENER SURVEY SMS SENT:", {
+    to,
+    from,
+    sid: sms.sid
+  });
+
+  return { success: true, sid: sms.sid };
 }
 
 app.post("/send-payment-sms", async (req, res) => {
@@ -1882,7 +1973,7 @@ app.post("/send-survey-sms", async (req, res) => {
   try {
     console.log("SURVEY SMS REQUEST:", req.body);
 
-  const rawSurveyPhone =
+const rawSurveyPhone =
   req.body.phone_number ||
   req.body.phone ||
   req.body.from ||
@@ -1890,11 +1981,39 @@ app.post("/send-survey-sms", async (req, res) => {
   req.body.customerPhone ||
   "";
 
-const phone_number = normalizePhone(rawSurveyPhone);
+const surveyCallId =
+  req.body.call_id ||
+  req.body.callId ||
+  req.body.bland_call_id ||
+  "";
+
+let phone_number = normalizePhone(rawSurveyPhone);
+
+if (!phone_number && surveyCallId) {
+  const payment =
+    payments.get(surveyCallId) ||
+    [...payments.values()].find((p) =>
+      p.callId === surveyCallId ||
+      p.blandCallId === surveyCallId ||
+      p.fallbackBlandCallId === surveyCallId ||
+      p.sessionId === surveyCallId ||
+      p.activeSessionId === surveyCallId
+    );
+
+  if (payment) {
+    phone_number = normalizePhone(
+      payment.customerPhone ||
+      payment.phone ||
+      payment.callerPhone ||
+      ""
+    );
+  }
+}
 
 if (!phone_number) {
   return res.status(400).json({
     success: false,
+    ok: false,
     error: "Missing phone_number"
   });
 }
