@@ -624,6 +624,137 @@ const phone = normalizePhone(rawPhone);
 });
 });
 
+app.post("/bland/lookup-ai-handoff", async (req, res) => {
+  try {
+    console.log("LOOKUP AI HANDOFF REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.caller_number ||
+      req.body.from ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    const callId =
+      req.body.call_id ||
+      req.body.callId ||
+      req.body.bland_call_id ||
+      "";
+
+    const language = String(req.body.language || "").toLowerCase().trim();
+    const source = req.body.source || "ai_handoff_lookup";
+
+    const payment =
+      payments.get(phone) ||
+      payments.get(callId) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          p.sessionComplete !== true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId
+          )
+        );
+      });
+
+    if (!payment || payment.paid !== true) {
+      console.log("LOOKUP AI HANDOFF: NO ACTIVE PAID SESSION FOUND", {
+        rawPhone,
+        phone,
+        callId,
+        language,
+        source
+      });
+
+      return res.json({
+        ok: false,
+        found: false,
+        paid: false,
+        message: "No active paid handoff session found."
+      });
+    }
+
+    const sessionSeconds =
+      payment.totalSessionSeconds ||
+      payment.sessionSeconds ||
+      payment.plan?.seconds ||
+      900;
+
+    const sessionType =
+      payment.sessionType ||
+      payment.session_type ||
+      payment.selectedPersona ||
+      payment.sessionLabel ||
+      "no_filter";
+
+    const callerName =
+      payment.callerName ||
+      payment.customerName ||
+      payment.displayName ||
+      pendingCallerNames.get(payment.customerPhone) ||
+      pendingCallerNames.get(payment.phone) ||
+      pendingCallerNames.get(phone) ||
+      "Caller";
+
+    payment.fallbackBlandCallId = callId || payment.fallbackBlandCallId || null;
+    payment.blandCallId = callId || payment.blandCallId || null;
+    payment.lastAiHandoffLookupAt = new Date().toISOString();
+    payment.language = language || payment.language || null;
+    payment.source = source;
+
+    console.log("LOOKUP AI HANDOFF FOUND:", {
+      phone,
+      callId,
+      callerName,
+      sessionType,
+      sessionSeconds,
+      language,
+      source
+    });
+
+    return res.json({
+      ok: true,
+      found: true,
+      paid: true,
+
+      caller_name: callerName,
+      phone_number: payment.customerPhone || payment.phone || phone,
+      customerPhone: payment.customerPhone || payment.phone || phone,
+      customer_phone: payment.customerPhone || payment.phone || phone,
+
+      session_type: sessionType,
+      selected_persona: sessionType,
+      session_seconds: sessionSeconds,
+      total_session_seconds: sessionSeconds,
+
+      language: language || payment.language || null,
+      call_id: payment.callId || callId || null,
+      bland_call_id: callId || payment.fallbackBlandCallId || null,
+
+      message: "Active paid AI handoff session found."
+    });
+  } catch (error) {
+    console.error("LOOKUP AI HANDOFF ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      found: false,
+      paid: false,
+      error: error.message
+    });
+  }
+});
+
 app.post("/bland/save-caller-name", (req, res) => {
   try {
     const phone =
