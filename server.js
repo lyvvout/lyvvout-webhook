@@ -1161,6 +1161,62 @@ const surveyDue =
   });
 });
 
+app.post("/twilio/spanish-ai-hold", async (req, res) => {
+  try {
+    console.log("SPANISH AI HOLD REQUEST:", {
+      from: req.body.From,
+      to: req.body.To,
+      callSid: req.body.CallSid,
+      direction: req.body.Direction
+    });
+
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const response = new VoiceResponse();
+
+    response.say(
+      { voice: "alice", language: "es-MX" },
+      "Un momento. Estamos preparando tu sesión privada."
+    );
+
+    response.pause({ length: 15 });
+
+    const spanishFallbackNumber =
+      process.env.TWILIO_SPANISH_AI_FALLBACK_NUMBER || "+18303315988";
+
+    const dial = response.dial({
+      callerId: process.env.TWILIO_SPANISH_HOLD_NUMBER || req.body.To,
+      answerOnBridge: true,
+      timeout: 20
+    });
+
+    dial.number(spanishFallbackNumber);
+
+    console.log("DIALING SPANISH AI FALLBACK NUMBER:", {
+      from: req.body.From,
+      callSid: req.body.CallSid,
+      spanishFallbackNumber
+    });
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  } catch (error) {
+    console.error("SPANISH AI HOLD ERROR:", error);
+
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const response = new VoiceResponse();
+
+    response.say(
+      { voice: "alice", language: "es-MX" },
+      "Lo sentimos. No pudimos conectar tu sesión en este momento. Por favor intenta llamar de nuevo."
+    );
+
+    response.hangup();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+});
+
 app.post("/twilio/incoming-live-call", async (req, res) => {
   console.log("LIVE CALL INCOMING:", req.body);
 
