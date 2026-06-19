@@ -88,6 +88,27 @@ function findMostRecentFallbackPayment() {
   return fallbackPayments[0] || null;
 }
 
+function findMostRecentActivePaidPayment() {
+  const uniquePayments = [...new Set([...payments.values()])];
+
+  const activePayments = uniquePayments
+    .filter((p) => {
+      return (
+        p &&
+        p.paid === true &&
+        p.sessionComplete !== true &&
+        p.timerStarted !== true
+      );
+    })
+    .sort((a, b) => {
+      const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
+      const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+  return activePayments[0] || null;
+}
+
 function findPaymentForBlandTimer(req) {
   const rawPhone =
     req.body.phone_number ||
@@ -1357,20 +1378,38 @@ app.post("/twilio/incoming-live-call", async (req, res) => {
   const from = normalizePhone(req.body.From || req.body.caller_number || "");
   const callSid = req.body.CallSid || "";
 
-  const payment =
-    payments.get(from) ||
-    payments.get(callSid) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === from ||
-          normalizePhone(p.phone) === from ||
-          p.callId === callSid ||
-          normalizePhone(p.callId) === from
-        )
-      );
+  let payment =
+  payments.get(from) ||
+  payments.get(callSid) ||
+  [...payments.values()].find((p) => {
+    return (
+      p &&
+      p.paid === true &&
+      p.sessionComplete !== true &&
+      (
+        normalizePhone(p.customerPhone) === from ||
+        normalizePhone(p.phone) === from ||
+        normalizePhone(p.callerPhone) === from ||
+        p.callId === callSid ||
+        p.liveCallSid === callSid ||
+        normalizePhone(p.callId) === from
+      )
+    );
+  });
+
+if (!payment) {
+  payment = findMostRecentActivePaidPayment();
+
+  if (payment) {
+    console.log("LIVE CALL PAYMENT RECOVERED USING MOST RECENT ACTIVE PAID SESSION:", {
+      twilioFrom: from,
+      callSid,
+      recoveredCustomerPhone: payment.customerPhone,
+      recoveredSessionType: payment.sessionType,
+      paidAt: payment.paidAt
     });
+  }
+}
 
   if (!payment) {
     response.say(
