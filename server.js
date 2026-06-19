@@ -1558,32 +1558,34 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  // Safety fallback: if Twilio does not end the Enqueue at 180 seconds,
-  // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
-  if (queueTime >= 14) {
-    console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
-      CallSid: req.body.CallSid,
-      QueueSid: req.body.QueueSid,
-      QueueTime: queueTime
-    });
-
-    response.leave();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  if (queueTime === 0) {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "Thank you for holding. A dedicated listener will be with you shortly."
-    );
-  }
-
-  response.play(
-    { loop: 1 },
-    "https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3"
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Thank you. We are setting up your private session now."
   );
+
+  response.pause({ length: 5 });
+
+  response.say(
+    { voice: "Polly.Joanna" },
+    "One moment. Your listener experience is almost ready."
+  );
+
+  response.pause({ length: 5 });
+
+  response.say(
+    { voice: "Polly.Joanna" },
+    "Connecting you now."
+  );
+
+  response.pause({ length: 2 });
+
+  console.log("FORCING QUEUE LEAVE TO AI FALLBACK AFTER SHORT HOLD:", {
+    CallSid: req.body.CallSid,
+    QueueSid: req.body.QueueSid,
+    QueueTime: queueTime
+  });
+
+  response.leave();
 
   res.type("text/xml");
   return res.send(response.toString());
@@ -1659,17 +1661,16 @@ app.post("/twilio/queue-fallback", (req, res) => {
     return res.send(response.toString());
   }
 
-  const shouldFallback =
-    queueResult === "timeout" ||
-    queueResult === "queue-full" ||
-    queueResult === "system-error" ||
-    queueResult === "error" ||
-    queueResult === "redirected" ||
-    (
-      queueResult === "leave" &&
-      queueTime >= 14 &&
-      !liveSessionAlreadyStarted
-    );
+const shouldFallback =
+  queueResult === "timeout" ||
+  queueResult === "queue-full" ||
+  queueResult === "system-error" ||
+  queueResult === "error" ||
+  queueResult === "redirected" ||
+  (
+    queueResult === "leave" &&
+    !liveSessionAlreadyStarted
+  );
 
   if (!shouldFallback) {
     console.log("QUEUE ENDED WITHOUT FALLBACK:", {
