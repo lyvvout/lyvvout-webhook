@@ -1901,14 +1901,13 @@ enqueue.task(
 });
 
 // Hold music while caller waits in queue
-
 app.post("/twilio/hold-music", (req, res) => {
   const VoiceResponse = require("twilio").twiml.VoiceResponse;
   const response = new VoiceResponse();
 
   const queueTime = parseInt(req.body.QueueTime || "0", 10);
 
-  console.log("Hold music waitUrl hit:", {
+  console.log("LIVE QUEUE WAIT URL HIT:", {
     CallSid: req.body.CallSid,
     QueueSid: req.body.QueueSid,
     QueueTime: queueTime,
@@ -1916,26 +1915,17 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  const holdMusicUrl =
-    process.env.TWILIO_HOLD_MUSIC_URL ||
-    "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3";
-
   if (queueTime === 0) {
     response.say(
       {
-        voice: "Polly.Joanna-Neural",
+        voice: "Polly.Joanna",
         language: "en-US"
       },
-      "Thank you for holding. We are connecting you with your listener."
+      "One moment. We are connecting your private session now."
     );
   }
 
-  response.play(
-    {
-      loop: 1
-    },
-    holdMusicUrl
-  );
+  response.pause({ length: 10 });
 
   res.type("text/xml");
   return res.send(response.toString());
