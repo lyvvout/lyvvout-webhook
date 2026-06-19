@@ -1402,7 +1402,7 @@ const enqueue = response.enqueue({
   waitUrlMethod: "POST",
   action: `${process.env.BASE_URL}/twilio/queue-fallback`,
   method: "POST",
-  timeout: 180
+  timeout: 15
 });
 
 const activeSessionId =
@@ -1545,7 +1545,7 @@ app.post("/twilio/hold-music", (req, res) => {
 
   // Safety fallback: if Twilio does not end the Enqueue at 180 seconds,
   // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
-  if (queueTime >= 175) {
+  if (queueTime >= 14) {
     console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
       CallSid: req.body.CallSid,
       QueueSid: req.body.QueueSid,
@@ -1652,7 +1652,7 @@ app.post("/twilio/queue-fallback", (req, res) => {
     queueResult === "redirected" ||
     (
       queueResult === "leave" &&
-      queueTime >= 175 &&
+      queueTime >= 14 &&
       !liveSessionAlreadyStarted
     );
 
