@@ -778,82 +778,149 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
 
 app.post("/bland/save-caller-name", (req, res) => {
   try {
-    const phone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
+    console.log("SAVE CALLER NAME REQUEST:", req.body);
 
-const call_id =
-  req.body.call_id ||
-  req.body.callId ||
-  req.body.bland_call_id ||
-  "";
+    const pickRealValue = (...values) => {
+      for (const value of values) {
+        if (!value) continue;
+        if (isTemplateValue(value)) continue;
 
-const caller_name =
-  req.body.caller_name ||
-  req.body.callerName ||
-  req.body.customerName ||
-  req.body.name ||
-  "";
+        const clean = String(value).trim();
+        if (!clean) continue;
 
-    const normalizePhone = (value) => {
-      if (!value) return "";
-      const digits = String(value).replace(/\D/g, "");
-      if (digits.length === 10) return `+1${digits}`;
-      if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-      return String(value).trim();
+        return clean;
+      }
+
+      return "";
     };
 
-    const normalizedPhone = normalizePhone(phone);
-    const cleanName = String(caller_name || "").trim();
+    const rawPhone = pickRealValue(
+      req.body.phone_number,
+      req.body.confirmed_phone_number,
+      req.body.phone,
+      req.body.from,
+      req.body.callerPhone,
+      req.body.customerPhone
+    );
+
+    const phone = normalizePhone(rawPhone);
+
+    const callId = pickRealValue(
+      req.body.call_id,
+      req.body.callId,
+      req.body.bland_call_id,
+      req.body.blandCallId,
+      req.body.client_reference_id
+    );
+
+    const cleanName = pickRealValue(
+      req.body.caller_name,
+      req.body.callerName,
+      req.body.customerName,
+      req.body.customer_name,
+      req.body.name,
+      req.body.first_name,
+      req.body.firstName
+    );
 
     if (!cleanName) {
-      return res.status(400).json({
-        ok: false,
-        message: "Missing caller_name"
+      console.log("SAVE CALLER NAME SKIPPED - NO REAL NAME:", {
+        rawPhone,
+        phone,
+        callId
+      });
+
+      return res.json({
+        ok: true,
+        saved: false,
+        caller_saved: false,
+        message: "No real caller name was provided.",
+        caller_name: "Caller",
+        callerName: "Caller",
+        phone_number: phone || rawPhone || null,
+        call_id: callId || null
       });
     }
 
-    if (call_id) {
-      pendingCallerNames.set(call_id, cleanName);
+    if (phone) {
+      pendingCallerNames.set(phone, cleanName);
     }
 
-    if (normalizedPhone) {
-      pendingCallerNames.set(normalizedPhone, cleanName);
+    if (rawPhone && !isTemplateValue(rawPhone)) {
+      pendingCallerNames.set(rawPhone, cleanName);
     }
 
-    const payment =
-      payments.get(normalizedPhone) ||
-      payments.get(call_id) ||
+    if (callId) {
+      pendingCallerNames.set(callId, cleanName);
+      pendingCallerNames.set(normalizePhone(callId), cleanName);
+    }
+
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      (callId && payments.get(normalizePhone(callId))) ||
       [...payments.values()].find((p) => {
         return (
-          normalizePhone(p.customerPhone) === normalizedPhone ||
-          normalizePhone(p.phone) === normalizedPhone ||
-          p.callId === call_id ||
-          p.blandCallId === call_id
+          p &&
+          p.sessionComplete !== true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId ||
+            normalizePhone(p.callId) === phone ||
+            normalizePhone(p.callId) === normalizePhone(callId)
+          )
         );
       });
+
+    if (!payment && typeof findMostRecentActivePaidPayment === "function") {
+      payment = findMostRecentActivePaidPayment();
+    }
 
     if (payment) {
       payment.callerName = cleanName;
       payment.customerName = cleanName;
-      payment.blandCallId = call_id || payment.blandCallId || null;
+      payment.displayName = cleanName;
+      payment.updatedAt = new Date().toISOString();
+
+      if (callId) {
+        payment.blandCallId = callId;
+      }
+
+      if (phone) {
+        payment.callerPhone = payment.callerPhone || phone;
+      }
     }
 
     console.log("CALLER NAME SAVED:", {
-      phone: normalizedPhone,
-      call_id,
+      rawPhone,
+      phone,
+      callId,
       callerName: cleanName,
       attachedToPayment: !!payment
     });
 
     return res.json({
       ok: true,
-      message: "Caller name saved",
+      saved: true,
+      caller_saved: true,
+      message: "Caller name saved.",
+
+      caller_name: cleanName,
       callerName: cleanName,
+      customerName: cleanName,
+
+      phone_number: phone || rawPhone || payment?.customerPhone || null,
+      confirmed_phone_number: phone || rawPhone || payment?.customerPhone || null,
+      customerPhone: payment?.customerPhone || phone || rawPhone || null,
+      customer_phone: payment?.customerPhone || phone || rawPhone || null,
+
+      call_id: payment?.callId || callId || null,
+      bland_call_id: callId || payment?.blandCallId || null,
+
       attachedToPayment: !!payment
     });
   } catch (error) {
@@ -861,7 +928,9 @@ const caller_name =
 
     return res.status(500).json({
       ok: false,
-      message: "Failed to save caller name",
+      saved: false,
+      caller_saved: false,
+      message: "Failed to save caller name.",
       error: error.message
     });
   }
