@@ -88,25 +88,6 @@ function findMostRecentFallbackPayment() {
   return fallbackPayments[0] || null;
 }
 
-function findMostRecentActivePaidPayment() {
-  const activePayments = [...payments.values()]
-    .filter((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        p.sessionComplete !== true &&
-        p.timerStarted !== true
-      );
-    })
-    .sort((a, b) => {
-      const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
-      const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
-      return bTime - aTime;
-    });
-
-  return activePayments[0] || null;
-}
-
 function findPaymentForBlandTimer(req) {
   const rawPhone =
     req.body.phone_number ||
@@ -439,38 +420,22 @@ app.post("/bland/check-payment", async (req, res) => {
     normalizedCallId,
   });
 
-let payment =
-  payments.get(from) ||
-  payments.get(callSid) ||
-  [...payments.values()].find((p) => {
-    return (
-      p &&
-      p.paid === true &&
-      p.sessionComplete !== true &&
-      (
-        normalizePhone(p.customerPhone) === from ||
-        normalizePhone(p.phone) === from ||
-        normalizePhone(p.callerPhone) === from ||
-        p.callId === callSid ||
-        p.liveCallSid === callSid ||
-        normalizePhone(p.callId) === from
-      )
-    );
-  });
-
-if (!payment) {
-  payment = findMostRecentActivePaidPayment();
-
-  if (payment) {
-    console.log("LIVE CALL PAYMENT RECOVERED USING MOST RECENT ACTIVE PAID SESSION:", {
-      twilioFrom: from,
-      callSid,
-      recoveredCustomerPhone: payment.customerPhone,
-      recoveredSessionType: payment.sessionType,
-      paidAt: payment.paidAt
+  const payment =
+    payments.get(phone) ||
+    payments.get(callId) ||
+    payments.get(normalizedCallId) ||
+    [...payments.values()].find((p) => {
+      return (
+        p.paid === true &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          p.callId === callId ||
+          normalizePhone(p.callId) === normalizedCallId ||
+          normalizePhone(p.callId) === phone
+        )
+      );
     });
-  }
-}
 
   console.log("PAYMENT LOOKUP RESULT:", payment || "NO PAYMENT FOUND");
 
@@ -1593,34 +1558,32 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Thank you. We are setting up your private session now."
+  // Safety fallback: if Twilio does not end the Enqueue at 180 seconds,
+  // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
+  if (queueTime >= 14) {
+    console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
+      CallSid: req.body.CallSid,
+      QueueSid: req.body.QueueSid,
+      QueueTime: queueTime
+    });
+
+    response.leave();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  if (queueTime === 0) {
+    response.say(
+      { voice: "Polly.Joanna" },
+      "Thank you for holding. A dedicated listener will be with you shortly."
+    );
+  }
+
+  response.play(
+    { loop: 1 },
+    "https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3"
   );
-
-  response.pause({ length: 5 });
-
-  response.say(
-    { voice: "Polly.Joanna" },
-    "One moment. Your listener experience is almost ready."
-  );
-
-  response.pause({ length: 5 });
-
-  response.say(
-    { voice: "Polly.Joanna" },
-    "Connecting you now."
-  );
-
-  response.pause({ length: 2 });
-
-  console.log("FORCING QUEUE LEAVE TO AI FALLBACK AFTER SHORT HOLD:", {
-    CallSid: req.body.CallSid,
-    QueueSid: req.body.QueueSid,
-    QueueTime: queueTime
-  });
-
-  response.leave();
 
   res.type("text/xml");
   return res.send(response.toString());
@@ -1696,16 +1659,17 @@ app.post("/twilio/queue-fallback", (req, res) => {
     return res.send(response.toString());
   }
 
-const shouldFallback =
-  queueResult === "timeout" ||
-  queueResult === "queue-full" ||
-  queueResult === "system-error" ||
-  queueResult === "error" ||
-  queueResult === "redirected" ||
-  (
-    queueResult === "leave" &&
-    !liveSessionAlreadyStarted
-  );
+  const shouldFallback =
+    queueResult === "timeout" ||
+    queueResult === "queue-full" ||
+    queueResult === "system-error" ||
+    queueResult === "error" ||
+    queueResult === "redirected" ||
+    (
+      queueResult === "leave" &&
+      queueTime >= 14 &&
+      !liveSessionAlreadyStarted
+    );
 
   if (!shouldFallback) {
     console.log("QUEUE ENDED WITHOUT FALLBACK:", {
