@@ -1626,17 +1626,16 @@ app.post("/twilio/queue-fallback", (req, res) => {
     return res.send(response.toString());
   }
 
-  const shouldFallback =
-    queueResult === "timeout" ||
-    queueResult === "queue-full" ||
-    queueResult === "system-error" ||
-    queueResult === "error" ||
-    queueResult === "redirected" ||
-    (
-      queueResult === "leave" &&
-      queueTime >= 15 &&
-      !liveSessionAlreadyStarted
-    );
+const shouldFallback =
+  queueResult === "timeout" ||
+  queueResult === "queue-full" ||
+  queueResult === "system-error" ||
+  queueResult === "error" ||
+  queueResult === "redirected" ||
+  (
+    queueResult === "leave" &&
+    !liveSessionAlreadyStarted
+  );
 
   if (!shouldFallback) {
     console.log("QUEUE ENDED WITHOUT FALLBACK:", {
