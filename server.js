@@ -1504,8 +1504,8 @@ app.post("/twilio/hold-music", (req, res) => {
   }
 
   response.play(
-    { loop: 0 },
-    "https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3"
+    { loop: 1 },
+    "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3"
   );
 
   res.type("text/xml");
