@@ -2056,10 +2056,11 @@ app.post("/twilio/hold-music", (req, res) => {
   });
 
   /*
-    Safe queue behavior:
-    - First hit: say one short line, play short music, pause.
-    - Second hit after queueTime >= 8: leave queue and route to AI fallback.
-    - Do not leave immediately at QueueTime 0.
+    No hold music.
+    No MP3.
+    No immediate leave at QueueTime 0.
+    First hit: one short message and pause.
+    Second hit: leave queue to AI fallback.
   */
 
   if (queueTime >= 8) {
@@ -2080,18 +2081,10 @@ app.post("/twilio/hold-music", (req, res) => {
       voice: "Polly.Joanna",
       language: "en-US"
     },
-    "One moment. We are connecting your private session now."
+    "We are connecting your private session now."
   );
 
-  response.play(
-    {
-      loop: 1
-    },
-    process.env.TWILIO_HOLD_MUSIC_URL ||
-      "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3"
-  );
-
-  response.pause({ length: 2 });
+  response.pause({ length: 8 });
 
   res.type("text/xml");
   return res.send(response.toString());
