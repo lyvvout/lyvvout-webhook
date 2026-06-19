@@ -628,22 +628,33 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
   try {
     console.log("LOOKUP AI HANDOFF REQUEST:", req.body);
 
-    const rawPhone =
-      req.body.phone_number ||
-      req.body.phone ||
-      req.body.caller_number ||
-      req.body.from ||
-      req.body.customerPhone ||
-      req.body.callerPhone ||
-      "";
+    const pickRealValue = (...values) => {
+      for (const value of values) {
+        if (!value) continue;
+        if (isTemplateValue(value)) continue;
+        const clean = String(value).trim();
+        if (!clean) continue;
+        return clean;
+      }
+      return "";
+    };
+
+    const rawPhone = pickRealValue(
+      req.body.phone_number,
+      req.body.phone,
+      req.body.caller_number,
+      req.body.from,
+      req.body.customerPhone,
+      req.body.callerPhone
+    );
 
     const phone = normalizePhone(rawPhone);
 
-    const callId =
-      req.body.call_id ||
-      req.body.callId ||
-      req.body.bland_call_id ||
-      "";
+    const callId = pickRealValue(
+      req.body.call_id,
+      req.body.callId,
+      req.body.bland_call_id
+    );
 
     const language = String(req.body.language || "").toLowerCase().trim();
     const source = req.body.source || "ai_handoff_lookup";
@@ -662,10 +673,12 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
             normalizePhone(p.callerPhone) === phone ||
             p.callId === callId ||
             p.blandCallId === callId ||
-            p.fallbackBlandCallId === callId
+            p.fallbackBlandCallId === callId ||
+            p.liveCallSid === req.body.CallSid
           )
         );
-      });
+      }) ||
+      findMostRecentFallbackPayment();
 
     if (!payment || payment.paid !== true) {
       console.log("LOOKUP AI HANDOFF: NO ACTIVE PAID SESSION FOUND", {
@@ -711,6 +724,8 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
     payment.lastAiHandoffLookupAt = new Date().toISOString();
     payment.language = language || payment.language || null;
     payment.source = source;
+    payment.fallbackRequested = true;
+    payment.fallbackEntryHitAt = payment.fallbackEntryHitAt || new Date().toISOString();
 
     console.log("LOOKUP AI HANDOFF FOUND:", {
       phone,
