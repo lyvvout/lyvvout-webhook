@@ -1915,17 +1915,33 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  if (queueTime === 0) {
-    response.say(
-      {
-        voice: "Polly.Joanna",
-        language: "en-US"
-      },
-      "One moment. We are connecting your private session now."
-    );
+  // Do NOT leave immediately at QueueTime 0.
+  // Give Twilio/Flex a few seconds to create the TaskRouter task first.
+  if (queueTime >= 8) {
+    console.log("LEAVING QUEUE TO AI FALLBACK:", {
+      CallSid: req.body.CallSid,
+      QueueSid: req.body.QueueSid,
+      QueueTime: queueTime
+    });
+
+    response.leave();
+
+    res.type("text/xml");
+    return res.send(response.toString());
   }
 
-  response.pause({ length: 10 });
+  // Say this once, then pause. When Twilio finishes this TwiML,
+  // it will request this waitUrl again. On the next hit, QueueTime
+  // should be >= 8 and the route will return <Leave/>.
+  response.say(
+    {
+      voice: "Polly.Joanna",
+      language: "en-US"
+    },
+    "One moment. We are connecting your private session now."
+  );
+
+  response.pause({ length: 8 });
 
   res.type("text/xml");
   return res.send(response.toString());
