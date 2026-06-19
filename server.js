@@ -405,83 +405,129 @@ app.post("/bland/hours-check", (req, res) => {
 
 // Bland AI calls this after caller presses 1.
 app.post("/bland/check-payment", async (req, res) => {
-  console.log("CHECK PAYMENT REQUEST BODY:", req.body);
+  try {
+    console.log("CHECK PAYMENT REQUEST BODY:", req.body);
 
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.confirmed_phone_number ||
+      req.body.phone ||
+      req.body.from ||
+      req.body.callerPhone ||
+      req.body.customerPhone ||
+      "";
 
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    const phone = isTemplateValue(rawPhone) ? "" : normalizePhone(rawPhone);
 
-    return String(value).trim();
-  };
+    const callId =
+      req.body.call_id ||
+      req.body.callId ||
+      req.body.client_reference_id ||
+      "";
 
-  const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
-  const phone = normalizePhone(rawPhone);
+    const normalizedCallId = isTemplateValue(callId) ? "" : normalizePhone(callId);
 
-  const callId =
-    req.body.call_id ||
-    req.body.callId ||
-    req.body.client_reference_id ||
-    "";
-
-  const normalizedCallId = normalizePhone(callId);
-
-  console.log("NORMALIZED CHECK VALUES:", {
-    rawPhone,
-    phone,
-    callId,
-    normalizedCallId,
-  });
-
-  const payment =
-    payments.get(phone) ||
-    payments.get(callId) ||
-    payments.get(normalizedCallId) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          normalizePhone(p.phone) === phone ||
-          p.callId === callId ||
-          normalizePhone(p.callId) === normalizedCallId ||
-          normalizePhone(p.callId) === phone
-        )
-      );
+    console.log("NORMALIZED CHECK VALUES:", {
+      rawPhone,
+      phone,
+      callId,
+      normalizedCallId
     });
 
-  console.log("PAYMENT LOOKUP RESULT:", payment || "NO PAYMENT FOUND");
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      (normalizedCallId && payments.get(normalizedCallId)) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          p.sessionComplete !== true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            normalizePhone(p.callId) === normalizedCallId ||
+            normalizePhone(p.callId) === phone ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId
+          )
+        );
+      });
 
+    console.log("PAYMENT LOOKUP RESULT:", payment || "NO PAYMENT FOUND");
 
-  if (!payment || payment.paid !== true) {
+    if (!payment || payment.paid !== true) {
+      return res.json({
+        ok: false,
+        paid: false,
+        paymentStatus: "not_found",
+        payment_status: "not_found",
+        message:
+          "Payment has not been confirmed yet. Ask the caller to complete payment and press 1 again."
+      });
+    }
+
+    const sessionSeconds =
+      payment.totalSessionSeconds ||
+      payment.sessionSeconds ||
+      payment.plan?.seconds ||
+      900;
+
+    const sessionLength =
+      payment.plan?.sessionLength ||
+      String(Math.round(sessionSeconds / 60));
+
+    const confirmedPhone =
+      payment.customerPhone ||
+      payment.phone ||
+      payment.callerPhone ||
+      phone;
+
+    payment.paymentVerified = true;
+    payment.paymentVerifiedAt = new Date().toISOString();
+    payment.verifiedBlandCallId = callId || payment.verifiedBlandCallId || null;
+    payment.blandCallId = callId || payment.blandCallId || null;
+    payment.totalSessionSeconds = sessionSeconds;
+    payment.sessionSeconds = sessionSeconds;
+    payment.updatedAt = new Date().toISOString();
+
     return res.json({
+      ok: true,
+      paid: true,
+      paymentStatus: "paid",
+      payment_status: "paid",
+      message: "Payment confirmed. Continue the call.",
+
+      call_id: payment.callId || callId || confirmedPhone || null,
+      bland_call_id: callId || payment.blandCallId || null,
+
+      phone_number: confirmedPhone,
+      confirmed_phone_number: confirmedPhone,
+      customerPhone: confirmedPhone,
+      customer_phone: confirmedPhone,
+
+      session_length: sessionLength,
+      session_seconds: sessionSeconds,
+      total_session_seconds: sessionSeconds,
+
+      stripe_session_id: payment.stripeSessionId || null
+    });
+  } catch (error) {
+    console.error("CHECK PAYMENT ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
       paid: false,
-      paymentStatus: "not_found",
-      message:
-        "Payment has not been confirmed yet. Ask the caller to complete payment and press 1 again.",
+      paymentStatus: "error",
+      payment_status: "error",
+      message: "Payment check failed.",
+      error: error.message
     });
   }
-
-  return res.json({
-    paid: true,
-    paymentStatus: "paid",
-    message: "Payment confirmed. Continue the call.",
-    call_id: payment.callId || callId || null,
-    customerPhone: payment.customerPhone || payment.phone || phone,
-    session_length: payment.plan?.sessionLength || null,
-    session_seconds: payment.plan?.seconds || null,
-    stripe_session_id: payment.stripeSessionId || null,
-  });
-
 });
+
 app.post("/bland/update-caller-name", async (req, res) => {
   console.log("UPDATE CALLER NAME REQUEST:", req.body);
 
