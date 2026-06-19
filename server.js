@@ -1137,6 +1137,146 @@ app.post("/bland/save-session-type", (req, res) => {
     });
   }
 });
+app.post("/bland/get-fallback-session-type", async (req, res) => {
+  try {
+    console.log("GET FALLBACK SESSION TYPE REQUEST:", req.body);
+
+    const pickRealValue = (...values) => {
+      for (const value of values) {
+        if (!value) continue;
+        if (isTemplateValue(value)) continue;
+
+        const clean = String(value).trim();
+        if (!clean) continue;
+
+        return clean;
+      }
+
+      return "";
+    };
+
+    const rawPhone = pickRealValue(
+      req.body.phone_number,
+      req.body.confirmed_phone_number,
+      req.body.phone,
+      req.body.caller_number,
+      req.body.from,
+      req.body.callerPhone,
+      req.body.customerPhone
+    );
+
+    const phone = normalizePhone(rawPhone);
+
+    const callId = pickRealValue(
+      req.body.call_id,
+      req.body.callId,
+      req.body.bland_call_id,
+      req.body.fallback_bland_call_id,
+      req.body.live_call_sid
+    );
+
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          p.sessionComplete !== true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId ||
+            p.liveCallSid === callId ||
+            p.fallbackTwilioCallSid === callId
+          )
+        );
+      });
+
+    if (!payment) {
+      payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
+    }
+
+    if (!payment || payment.paid !== true) {
+      console.log("GET FALLBACK SESSION TYPE: NOT FOUND", {
+        rawPhone,
+        phone,
+        callId
+      });
+
+      return res.json({
+        ok: false,
+        found: false,
+        session_type: "",
+        message: "No active fallback session type found.",
+        data: {
+          session_type: "",
+          fallback_session_type: ""
+        }
+      });
+    }
+
+    const sessionType =
+      payment.sessionType ||
+      payment.session_type ||
+      payment.selectedPersona ||
+      payment.selected_persona ||
+      payment.sessionLabel ||
+      payment.session_label ||
+      "";
+
+    if (!sessionType) {
+      return res.json({
+        ok: false,
+        found: false,
+        session_type: "",
+        message: "Payment found, but no session type was saved.",
+        data: {
+          session_type: "",
+          fallback_session_type: ""
+        }
+      });
+    }
+
+    payment.lastFallbackSessionTypeCheckAt = new Date().toISOString();
+    payment.updatedAt = new Date().toISOString();
+
+    console.log("GET FALLBACK SESSION TYPE FOUND:", {
+      phone,
+      callId,
+      customerPhone: payment.customerPhone,
+      sessionType
+    });
+
+    return res.json({
+      ok: true,
+      found: true,
+      session_type: sessionType,
+      message: sessionType,
+      data: {
+        session_type: sessionType,
+        fallback_session_type: sessionType
+      }
+    });
+  } catch (error) {
+    console.error("GET FALLBACK SESSION TYPE ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      found: false,
+      session_type: "",
+      message: "Fallback session type check failed.",
+      error: error.message,
+      data: {
+        session_type: "",
+        fallback_session_type: ""
+      }
+    });
+  }
+});
 
 app.post("/bland/session-start", async (req, res) => {
   const {
