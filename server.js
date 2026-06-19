@@ -1014,10 +1014,11 @@ app.post("/bland/session-start", async (req, res) => {
     foundPayment: !!payment
   });
 
-  if (!payment) {
+  if (!payment || payment.paid !== true) {
     return res.status(404).json({
       ok: false,
       paid: false,
+      active: false,
       timer_started: false,
       error: "No active paid session found."
     });
@@ -1031,11 +1032,42 @@ app.post("/bland/session-start", async (req, res) => {
     payment.plan?.seconds ||
     900;
 
+  const sessionType =
+    payment.sessionType ||
+    payment.session_type ||
+    payment.selectedPersona ||
+    payment.selected_persona ||
+    payment.sessionLabel ||
+    payment.session_label ||
+    "no_filter";
+
+  const callerName =
+    payment.callerName ||
+    payment.customerName ||
+    payment.displayName ||
+    pendingCallerNames.get(payment.customerPhone) ||
+    pendingCallerNames.get(payment.phone) ||
+    pendingCallerNames.get(payment.callerPhone) ||
+    pendingCallerNames.get(phone) ||
+    "Caller";
+
+  payment.sessionType = sessionType;
+  payment.session_type = sessionType;
+  payment.selectedPersona = sessionType;
+  payment.selected_persona = sessionType;
+  payment.sessionLabel = sessionType;
+  payment.session_label = sessionType;
+
+  payment.callerName = callerName;
+  payment.customerName = callerName;
+  payment.displayName = callerName;
+
   if (payment.timerStarted === true && payment.liveSessionEndsAt) {
     console.log("SESSION START IGNORED - TIMER ALREADY STARTED:", {
       phone,
       callId,
-      liveSessionEndsAt: payment.liveSessionEndsAt
+      liveSessionEndsAt: payment.liveSessionEndsAt,
+      sessionType
     });
 
     return res.json({
@@ -1045,14 +1077,33 @@ app.post("/bland/session-start", async (req, res) => {
       active: true,
       timer_started: true,
       message: "Timer already started",
+
+      caller_name: callerName,
+      callerName: callerName,
+      customerName: callerName,
+
+      phone_number: payment.customerPhone || payment.phone || phone,
+      customerPhone: payment.customerPhone || payment.phone || phone,
+      customer_phone: payment.customerPhone || payment.phone || phone,
+
+      session_type: sessionType,
+      sessionType: sessionType,
+      selected_persona: sessionType,
+      selectedPersona: sessionType,
+      session_label: sessionType,
+      sessionLabel: sessionType,
+
       call_id: payment.callId || callId || payment.customerPhone,
       session_id: payment.sessionId || payment.activeSessionId || null,
+
       remaining_seconds: getLiveRemainingSeconds(payment),
       total_session_seconds: totalSessionSeconds,
+
       liveSessionStartedAt:
         payment.liveSessionStartedAt ||
         payment.aiSessionStartedAt ||
         payment.sessionStartedAt,
+
       liveSessionEndsAt: payment.liveSessionEndsAt,
       session_complete: payment.sessionComplete === true
     });
@@ -1090,6 +1141,8 @@ app.post("/bland/session-start", async (req, res) => {
     sessionId: payment.sessionId,
     callId,
     totalSessionSeconds,
+    sessionType,
+    callerName,
     sessionStartedAt: payment.sessionStartedAt,
     aiSessionStartedAt: payment.aiSessionStartedAt,
     liveSessionEndsAt: payment.liveSessionEndsAt,
@@ -1102,10 +1155,28 @@ app.post("/bland/session-start", async (req, res) => {
     active: true,
     timer_started: true,
     message: "Timer started.",
+
+    caller_name: callerName,
+    callerName: callerName,
+    customerName: callerName,
+
+    phone_number: payment.customerPhone || payment.phone || phone,
+    customerPhone: payment.customerPhone || payment.phone || phone,
+    customer_phone: payment.customerPhone || payment.phone || phone,
+
+    session_type: sessionType,
+    sessionType: sessionType,
+    selected_persona: sessionType,
+    selectedPersona: sessionType,
+    session_label: sessionType,
+    sessionLabel: sessionType,
+
     call_id: payment.callId || callId || payment.customerPhone,
     session_id: payment.sessionId || payment.activeSessionId || null,
+
     remaining_seconds: totalSessionSeconds,
     total_session_seconds: totalSessionSeconds,
+
     liveSessionStartedAt: payment.liveSessionStartedAt,
     liveSessionEndsAt: payment.liveSessionEndsAt,
     session_complete: false
