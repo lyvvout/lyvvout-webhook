@@ -538,20 +538,24 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
       for (const value of values) {
         if (!value) continue;
         if (isTemplateValue(value)) continue;
+
         const clean = String(value).trim();
         if (!clean) continue;
+
         return clean;
       }
+
       return "";
     };
 
     const rawPhone = pickRealValue(
       req.body.phone_number,
+      req.body.confirmed_phone_number,
       req.body.phone,
       req.body.caller_number,
       req.body.from,
-      req.body.customerPhone,
-      req.body.callerPhone
+      req.body.callerPhone,
+      req.body.customerPhone
     );
 
     const phone = normalizePhone(rawPhone);
@@ -559,55 +563,63 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
     const callId = pickRealValue(
       req.body.call_id,
       req.body.callId,
-      req.body.bland_call_id
+      req.body.bland_call_id,
+      req.body.fallback_bland_call_id
     );
 
     const language = String(req.body.language || "").toLowerCase().trim();
     const source = req.body.source || "ai_handoff_lookup";
 
-  let payment =
-  payments.get(phone) ||
-  payments.get(callId) ||
-  [...payments.values()].find((p) => {
-    return (
-      p &&
-      p.paid === true &&
-      p.sessionComplete !== true &&
-      (
-        normalizePhone(p.customerPhone) === phone ||
-        normalizePhone(p.phone) === phone ||
-        normalizePhone(p.callerPhone) === phone ||
-        p.callId === callId ||
-        p.blandCallId === callId ||
-        p.fallbackBlandCallId === callId ||
-        p.liveCallSid === req.body.CallSid
-      )
-    );
-  }) ||
-  findMostRecentFallbackPayment();
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          p.sessionComplete !== true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId ||
+            p.liveCallSid === callId ||
+            p.fallbackTwilioCallSid === callId
+          )
+        );
+      });
 
-if (!payment) {
-  const recentPaid = [...payments.values()]
-    .filter((p) => p && p.paid === true && p.sessionComplete !== true)
-    .sort((a, b) => {
-      const aTime = new Date(a.paidAt || a.updatedAt || 0).getTime();
-      const bTime = new Date(b.paidAt || b.updatedAt || 0).getTime();
-      return bTime - aTime;
-    });
+    if (!payment) {
+      payment = findMostRecentFallbackPayment();
 
-  payment = recentPaid[0] || null;
+      if (payment) {
+        console.log("LOOKUP AI HANDOFF RECOVERED USING RECENT FALLBACK PAYMENT:", {
+          rawPhone,
+          phone,
+          callId,
+          recoveredCustomerPhone: payment.customerPhone,
+          recoveredSessionType: payment.sessionType
+        });
+      }
+    }
 
-  if (payment) {
-    console.log("LOOKUP AI HANDOFF - USED MOST RECENT PAID FALLBACK MATCH:", {
-      rawPhone,
-      phone,
-      callId,
-      matchedPhone: payment.customerPhone
-    });
-  }
-}
+    if (!payment) {
+      payment = findMostRecentActivePaidPayment();
 
-if (!payment || payment.paid !== true) {
+      if (payment) {
+        console.log("LOOKUP AI HANDOFF RECOVERED USING ACTIVE PAID SESSION:", {
+          rawPhone,
+          phone,
+          callId,
+          recoveredCustomerPhone: payment.customerPhone,
+          recoveredSessionType: payment.sessionType
+        });
+      }
+    }
+
+    if (!payment || payment.paid !== true) {
       console.log("LOOKUP AI HANDOFF: NO ACTIVE PAID SESSION FOUND", {
         rawPhone,
         phone,
@@ -634,7 +646,9 @@ if (!payment || payment.paid !== true) {
       payment.sessionType ||
       payment.session_type ||
       payment.selectedPersona ||
+      payment.selected_persona ||
       payment.sessionLabel ||
+      payment.session_label ||
       "no_filter";
 
     const callerName =
@@ -643,6 +657,7 @@ if (!payment || payment.paid !== true) {
       payment.displayName ||
       pendingCallerNames.get(payment.customerPhone) ||
       pendingCallerNames.get(payment.phone) ||
+      pendingCallerNames.get(payment.callerPhone) ||
       pendingCallerNames.get(phone) ||
       "Caller";
 
@@ -652,7 +667,16 @@ if (!payment || payment.paid !== true) {
     payment.language = language || payment.language || null;
     payment.source = source;
     payment.fallbackRequested = true;
-    payment.fallbackEntryHitAt = payment.fallbackEntryHitAt || new Date().toISOString();
+    payment.fallbackEntryHitAt =
+      payment.fallbackEntryHitAt || new Date().toISOString();
+    payment.updatedAt = new Date().toISOString();
+
+    payment.sessionType = sessionType;
+    payment.session_type = sessionType;
+    payment.selectedPersona = sessionType;
+    payment.selected_persona = sessionType;
+    payment.sessionLabel = sessionType;
+    payment.session_label = sessionType;
 
     console.log("LOOKUP AI HANDOFF FOUND:", {
       phone,
@@ -661,7 +685,8 @@ if (!payment || payment.paid !== true) {
       sessionType,
       sessionSeconds,
       language,
-      source
+      source,
+      customerPhone: payment.customerPhone
     });
 
     return res.json({
@@ -670,12 +695,20 @@ if (!payment || payment.paid !== true) {
       paid: true,
 
       caller_name: callerName,
+      callerName: callerName,
+      customerName: callerName,
+
       phone_number: payment.customerPhone || payment.phone || phone,
       customerPhone: payment.customerPhone || payment.phone || phone,
       customer_phone: payment.customerPhone || payment.phone || phone,
 
       session_type: sessionType,
+      sessionType: sessionType,
       selected_persona: sessionType,
+      selectedPersona: sessionType,
+      session_label: sessionType,
+      sessionLabel: sessionType,
+
       session_seconds: sessionSeconds,
       total_session_seconds: sessionSeconds,
 
