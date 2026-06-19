@@ -1775,7 +1775,7 @@ const enqueue = response.enqueue({
   waitUrlMethod: "POST",
   action: `${process.env.BASE_URL}/twilio/queue-fallback`,
   method: "POST",
-  timeout: 20
+  timeout: 15
 });
 
 const activeSessionId =
@@ -1920,19 +1920,22 @@ app.post("/twilio/hold-music", (req, res) => {
     process.env.TWILIO_HOLD_MUSIC_URL ||
     "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3";
 
+  if (queueTime === 0) {
+    response.say(
+      {
+        voice: "Polly.Joanna-Neural",
+        language: "en-US"
+      },
+      "Thank you for holding. We are connecting you with your listener."
+    );
+  }
+
   response.play(
-    { loop: 1 },
+    {
+      loop: 1
+    },
     holdMusicUrl
   );
-
-  console.log("FORCING QUEUE LEAVE TO AI FALLBACK AFTER HOLD MUSIC:", {
-    CallSid: req.body.CallSid,
-    QueueSid: req.body.QueueSid,
-    QueueTime: queueTime,
-    holdMusicUrl
-  });
-
-  response.leave();
 
   res.type("text/xml");
   return res.send(response.toString());
