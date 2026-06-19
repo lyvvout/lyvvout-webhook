@@ -2808,16 +2808,18 @@ app.post("/send-survey-sms", async (req, res) => {
 
       return res.json({
         ok: true,
-        sent: false,
+        sent: true,
         already_sent: true,
+        sid: payment.surveySmsSid || null,
+        phone_number: toPhone,
         message: "Survey SMS already sent."
       });
     }
 
     const surveyText =
-      "Thank you for calling LyvvOut. Please take a quick moment to share your experience: https://lyvvout.com/#survey. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
+      "Thank you for using LyvvOut. Please take a quick moment to complete your session survey: https://lyvvout.com/#survey";
 
-    const msg = await client.messages.create({
+    const msg = await twilioClient.messages.create({
       to: toPhone,
       from: process.env.TWILIO_PHONE_NUMBER,
       body: surveyText
