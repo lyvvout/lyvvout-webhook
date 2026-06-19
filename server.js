@@ -1534,32 +1534,23 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  // Safety fallback: if Twilio does not end the Enqueue at 15 seconds,
-  // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
-  if (queueTime >= 15) {
-    console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
-      CallSid: req.body.CallSid,
-      QueueSid: req.body.QueueSid,
-      QueueTime: queueTime
-    });
-
-    response.leave();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  if (queueTime === 0) {
-    response.say(
-      { voice: "Polly.Joanna" },
-      "Thank you for holding. A dedicated listener will be with you shortly."
-    );
-  }
+  const holdMusicUrl =
+    process.env.TWILIO_HOLD_MUSIC_URL ||
+    "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3";
 
   response.play(
     { loop: 1 },
-    "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3"
+    holdMusicUrl
   );
+
+  console.log("FORCING QUEUE LEAVE TO AI FALLBACK AFTER HOLD MUSIC:", {
+    CallSid: req.body.CallSid,
+    QueueSid: req.body.QueueSid,
+    QueueTime: queueTime,
+    holdMusicUrl
+  });
+
+  response.leave();
 
   res.type("text/xml");
   return res.send(response.toString());
