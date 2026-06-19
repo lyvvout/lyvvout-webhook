@@ -1739,29 +1739,51 @@ app.post("/twilio/bland-fallback-entry", (req, res) => {
     To: req.body.To
   });
 
-  const payment =
-    payments.get(from) ||
-    payments.get(callSid) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === from ||
-          normalizePhone(p.phone) === from ||
-          normalizePhone(p.callerPhone) === from ||
-          p.liveCallSid === callSid ||
-          p.callId === callSid ||
-          normalizePhone(p.callId) === from
-        )
-      );
-    });
+let payment =
+  payments.get(from) ||
+  payments.get(callSid) ||
+  [...payments.values()].find((p) => {
+    return (
+      p &&
+      p.paid === true &&
+      p.sessionComplete !== true &&
+      (
+        normalizePhone(p.customerPhone) === from ||
+        normalizePhone(p.phone) === from ||
+        normalizePhone(p.callerPhone) === from ||
+        p.liveCallSid === callSid ||
+        p.callId === callSid ||
+        normalizePhone(p.callId) === from
+      )
+    );
+  });
+
+if (!payment) {
+  payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
 
   if (payment) {
-    payment.fallbackEntryHitAt = new Date().toISOString();
-    payment.fallbackTwilioCallSid = callSid;
-    payment.liveSessionActive = false;
-    payment.source = "twilio_queue_fallback";
+    console.log("BLAND FALLBACK ENTRY PAYMENT RECOVERED USING ACTIVE SESSION:", {
+      twilioFrom: from,
+      callSid,
+      recoveredCustomerPhone: payment.customerPhone,
+      recoveredSessionType: payment.sessionType,
+      paidAt: payment.paidAt
+    });
   }
+}
+
+if (payment) {
+  payment.fallbackEntryHitAt = new Date().toISOString();
+  payment.fallbackTwilioCallSid = callSid;
+  payment.liveSessionActive = false;
+  payment.fallbackRequested = true;
+  payment.source = "twilio_queue_fallback";
+  payment.updatedAt = new Date().toISOString();
+
+  if (from) {
+    payment.callerPhone = payment.callerPhone || from;
+  }
+}
 
   const blandFallbackNumber = process.env.BLAND_FALLBACK_PHONE_NUMBER;
 
