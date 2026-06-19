@@ -1614,22 +1614,38 @@ app.post("/twilio/queue-fallback", (req, res) => {
     To: req.body.To
   });
 
-  const payment =
-    payments.get(from) ||
-    payments.get(callSid) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === from ||
-          normalizePhone(p.phone) === from ||
-          normalizePhone(p.callerPhone) === from ||
-          p.liveCallSid === callSid ||
-          p.callId === callSid ||
-          normalizePhone(p.callId) === from
-        )
-      );
+ let payment =
+  payments.get(from) ||
+  payments.get(callSid) ||
+  [...payments.values()].find((p) => {
+    return (
+      p &&
+      p.paid === true &&
+      p.sessionComplete !== true &&
+      (
+        normalizePhone(p.customerPhone) === from ||
+        normalizePhone(p.phone) === from ||
+        normalizePhone(p.callerPhone) === from ||
+        p.liveCallSid === callSid ||
+        p.callId === callSid ||
+        normalizePhone(p.callId) === from
+      )
+    );
+  });
+
+if (!payment) {
+  payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
+
+  if (payment) {
+    console.log("QUEUE FALLBACK PAYMENT RECOVERED USING ACTIVE SESSION:", {
+      twilioFrom: from,
+      callSid,
+      recoveredCustomerPhone: payment.customerPhone,
+      recoveredSessionType: payment.sessionType,
+      paidAt: payment.paidAt
     });
+  }
+}
 
   const liveSessionAlreadyStarted =
     payment &&
