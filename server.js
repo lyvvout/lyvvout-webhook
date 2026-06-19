@@ -314,13 +314,15 @@ app.post("/bland/hours-check", (req, res) => {
   try {
     const now = new Date();
 
-    const centralParts = new Intl.DateTimeFormat("en-US", {
+    const centralFormatter24 = new Intl.DateTimeFormat("en-US", {
       timeZone: "America/Chicago",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
       hourCycle: "h23"
-    }).formatToParts(now);
+    });
+
+    const centralParts = centralFormatter24.formatToParts(now);
 
     const getPart = (type) =>
       centralParts.find((part) => part.type === type)?.value;
@@ -328,22 +330,16 @@ app.post("/bland/hours-check", (req, res) => {
     let hour = Number(getPart("hour"));
     const minute = Number(getPart("minute"));
 
-    // Safety fix in case midnight comes back as 24 instead of 0
-    if (hour === 24) {
-      hour = 0;
-    }
+    if (Number.isNaN(hour)) hour = 0;
+    if (hour === 24) hour = 0;
 
-    const minutesSinceMidnight = hour * 60 + minute;
+    const safeMinute = Number.isNaN(minute) ? 0 : minute;
+    const minutesSinceMidnight = hour * 60 + safeMinute;
 
     /*
       LyvvOut Live Listener Hours:
       OPEN: 12:00 PM Central through 12:00 AM Central
       CLOSED: 12:01 AM Central through 11:59 AM Central
-
-      In 24-hour time:
-      12:00 PM = 720 minutes after midnight
-      12:00 AM = 0 minutes after midnight
-      12:01 AM = 1 minute after midnight
     */
 
     const isOpen =
@@ -353,52 +349,83 @@ app.post("/bland/hours-check", (req, res) => {
       timeZone: "America/Chicago",
       hour: "numeric",
       minute: "2-digit",
-      hour12: true
+      hour12: true,
+      timeZoneName: "short"
     }).format(now);
 
     const liveListenerOpen = isOpen ? "true" : "false";
+    const route = isOpen ? "live_listener" : "ai_fallback";
 
     console.log("HOURS CHECK RESULT:", {
+      source: req.body?.source || null,
+      phone: req.body?.phone || req.body?.phone_number || null,
+      call_id: req.body?.call_id || req.body?.callId || null,
       centralTime,
       hour,
-      minute,
+      minute: safeMinute,
       minutesSinceMidnight,
       isOpen,
       live_listener_open: liveListenerOpen,
-      route: isOpen ? "live_listener" : "ai_fallback"
+      route
     });
 
     return res.json({
       ok: true,
+
       timezone: "America/Chicago",
       central_time: centralTime,
+      current_central_time: centralTime,
+
       live_hours: "12:00 PM Central Time through 12:00 AM Central Time",
       closed_hours: "12:01 AM Central Time through 11:59 AM Central Time",
+
       hour,
-      minute,
+      minute: safeMinute,
       minutes_since_midnight: minutesSinceMidnight,
 
-      // Send as string because Bland route condition is using "true" and "false"
+      // Bland route condition uses string values: "true" / "false"
       is_open: liveListenerOpen,
       live_listener_open: liveListenerOpen,
 
-      route: isOpen ? "live_listener" : "ai_fallback",
+      // Extra boolean fields for logs/debugging only
+      is_open_bool: isOpen,
+      live_listener_open_bool: isOpen,
+
+      route,
+      hours_route: route,
+
       message: isOpen
-        ? "Live listeners are open."
+        ? "Live listeners are open. Route to live listener."
         : "Live listeners are closed. Route to AI fallback."
     });
   } catch (error) {
     console.error("HOURS CHECK ERROR:", error);
 
-    return res.status(500).json({
+    return res.status(200).json({
       ok: false,
+
       timezone: "America/Chicago",
+      central_time: null,
+      current_central_time: null,
+
       live_hours: "12:00 PM Central Time through 12:00 AM Central Time",
       closed_hours: "12:01 AM Central Time through 11:59 AM Central Time",
+
+      hour: null,
+      minute: null,
+      minutes_since_midnight: null,
+
       is_open: "false",
       live_listener_open: "false",
+
+      is_open_bool: false,
+      live_listener_open_bool: false,
+
       route: "ai_fallback",
-      message: "Hours check failed. Defaulting to AI fallback."
+      hours_route: "ai_fallback",
+
+      message: "Hours check failed. Route to AI fallback.",
+      error: error.message
     });
   }
 });
