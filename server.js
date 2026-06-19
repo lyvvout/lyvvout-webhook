@@ -509,121 +509,6 @@ app.post("/bland/update-caller-name", async (req, res) => {
   return res.json({ ok: true, message: "Caller name updated", callerName });
 });
 
-app.post("/bland/fallback-session-lookup", async (req, res) => {
-  console.log("FALLBACK SESSION LOOKUP REQUEST:", req.body);
-
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return String(value).trim();
-  };
-
-const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  "";
-
-const phone = normalizePhone(rawPhone);
-
-  const callId =
-    req.body.call_id ||
-    req.body.callId ||
-    req.body.bland_call_id ||
-    req.body.client_reference_id ||
-    "";
-
-  const normalizedCallId = normalizePhone(callId);
-
-  const payment =
-    payments.get(phone) ||
-    payments.get(callId) ||
-    payments.get(normalizedCallId) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          normalizePhone(p.phone) === phone ||
-          p.callId === callId ||
-          normalizePhone(p.callId) === normalizedCallId ||
-          normalizePhone(p.callId) === phone
-        )
-      );
-    });
-
-  if (!payment || payment.paid !== true) {
-    console.log("FALLBACK SESSION LOOKUP: NO PAYMENT FOUND", {
-      rawPhone,
-      phone,
-      callId,
-      normalizedCallId
-    });
-
-    return res.json({
-      ok: false,
-      paid: false,
-      paymentStatus: "not_found",
-      message: "No active paid session was found for this fallback call."
-    });
-  }
-
-  const sessionSeconds =
-    payment.totalSessionSeconds ||
-    payment.sessionSeconds ||
-    payment.plan?.seconds ||
-    900;
-
-  const sessionLength =
-    payment.plan?.sessionLength ||
-    String(Math.round(sessionSeconds / 60));
-
-  payment.fallbackBlandCallId = callId || payment.fallbackBlandCallId || null;
-  payment.blandCallId = callId || payment.blandCallId || null;
-  payment.lastFallbackLookupAt = new Date().toISOString();
-
-  console.log("FALLBACK SESSION LOOKUP FOUND PAYMENT:", {
-    phone,
-    callId,
-    sessionLength,
-    sessionSeconds,
-    customerPhone: payment.customerPhone,
-    paid: payment.paid
-  });
-
- return res.json({
-  ok: true,
-  paid: true,
-  paymentStatus: "paid",
-  message: "Paid session found.",
-
-  call_id: payment.callId || callId || payment.customerPhone || phone || null,
-  bland_call_id: callId || payment.fallbackBlandCallId || null,
-
-  customerPhone: payment.customerPhone || payment.phone || phone,
-  customer_phone: payment.customerPhone || payment.phone || phone,
-
-  session_length: sessionLength,
-  session_seconds: sessionSeconds,
-  total_session_seconds: sessionSeconds,
-
-  session_type:
-    payment.sessionType ||
-    payment.session_type ||
-    payment.selectedPersona ||
-    "no_filter",
-
-  selected_persona:
-    payment.selectedPersona ||
-    payment.sessionType ||
-    "no_filter",
-
-  timerStarted: payment.timerStarted === true
-});
-});
-
 app.post("/bland/lookup-ai-handoff", async (req, res) => {
   try {
     console.log("LOOKUP AI HANDOFF REQUEST:", req.body);
@@ -659,28 +544,49 @@ app.post("/bland/lookup-ai-handoff", async (req, res) => {
     const language = String(req.body.language || "").toLowerCase().trim();
     const source = req.body.source || "ai_handoff_lookup";
 
-    const payment =
-      payments.get(phone) ||
-      payments.get(callId) ||
-      [...payments.values()].find((p) => {
-        return (
-          p &&
-          p.paid === true &&
-          p.sessionComplete !== true &&
-          (
-            normalizePhone(p.customerPhone) === phone ||
-            normalizePhone(p.phone) === phone ||
-            normalizePhone(p.callerPhone) === phone ||
-            p.callId === callId ||
-            p.blandCallId === callId ||
-            p.fallbackBlandCallId === callId ||
-            p.liveCallSid === req.body.CallSid
-          )
-        );
-      }) ||
-      findMostRecentFallbackPayment();
+  let payment =
+  payments.get(phone) ||
+  payments.get(callId) ||
+  [...payments.values()].find((p) => {
+    return (
+      p &&
+      p.paid === true &&
+      p.sessionComplete !== true &&
+      (
+        normalizePhone(p.customerPhone) === phone ||
+        normalizePhone(p.phone) === phone ||
+        normalizePhone(p.callerPhone) === phone ||
+        p.callId === callId ||
+        p.blandCallId === callId ||
+        p.fallbackBlandCallId === callId ||
+        p.liveCallSid === req.body.CallSid
+      )
+    );
+  }) ||
+  findMostRecentFallbackPayment();
 
-    if (!payment || payment.paid !== true) {
+if (!payment) {
+  const recentPaid = [...payments.values()]
+    .filter((p) => p && p.paid === true && p.sessionComplete !== true)
+    .sort((a, b) => {
+      const aTime = new Date(a.paidAt || a.updatedAt || 0).getTime();
+      const bTime = new Date(b.paidAt || b.updatedAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+  payment = recentPaid[0] || null;
+
+  if (payment) {
+    console.log("LOOKUP AI HANDOFF - USED MOST RECENT PAID FALLBACK MATCH:", {
+      rawPhone,
+      phone,
+      callId,
+      matchedPhone: payment.customerPhone
+    });
+  }
+}
+
+if (!payment || payment.paid !== true) {
       console.log("LOOKUP AI HANDOFF: NO ACTIVE PAID SESSION FOUND", {
         rawPhone,
         phone,
@@ -863,71 +769,89 @@ const caller_name =
 
 app.post("/bland/save-session-type", (req, res) => {
   try {
-    const { phone, call_id, session_type } = req.body;
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.from ||
+      req.body.callerPhone ||
+      req.body.customerPhone ||
+      "";
 
-    const normalizePhone = (value) => {
-      if (!value) return "";
-      const digits = String(value).replace(/\D/g, "");
-      if (digits.length === 10) return `+1${digits}`;
-      if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-      return String(value).trim();
-    };
+    const call_id =
+      req.body.call_id ||
+      req.body.callId ||
+      req.body.bland_call_id ||
+      "";
 
-    const normalizedPhone = normalizePhone(phone);
+    const normalizedPhone = normalizePhone(rawPhone);
+    const session_type = req.body.session_type;
     const cleanSessionType = String(session_type || "").trim();
 
-const normalizeSessionType = (value) => {
-  const raw = String(value || "").trim().toLowerCase();
+    const normalizeSessionType = (value) => {
+      const raw = String(value || "").trim().toLowerCase();
 
-  const map = {
-    "1": "just_listen",
-    "just listen": "just_listen",
-    "just_listen": "just_listen",
+      const map = {
+        "1": "just_listen",
+        "just listen": "just_listen",
+        "just_listen": "just_listen",
+        "2": "react_with_me",
+        "react with me": "react_with_me",
+        "react_with_me": "react_with_me",
+        "3": "hype_session",
+        "hype session": "hype_session",
+        "hype_session": "hype_session",
+        "4": "keep_it_real",
+        "keep it real": "keep_it_real",
+        "keep_it_real": "keep_it_real",
+        "5": "no_filter",
+        "no filter": "no_filter",
+        "no_filter": "no_filter"
+      };
 
-    "2": "react_with_me",
-    "react with me": "react_with_me",
-    "react_with_me": "react_with_me",
+      return map[raw] || raw.replace(/\s+/g, "_");
+    };
 
-    "3": "hype_session",
-    "hype session": "hype_session",
-    "hype_session": "hype_session",
-
-    "4": "keep_it_real",
-    "keep it real": "keep_it_real",
-    "keep_it_real": "keep_it_real",
-
-    "5": "no_filter",
-    "no filter": "no_filter",
-    "no_filter": "no_filter"
-  };
-
-  return map[raw] || raw.replace(/\s+/g, "_");
-};
-
-const normalizedSessionType = normalizeSessionType(cleanSessionType);
+    const normalizedSessionType = normalizeSessionType(cleanSessionType);
 
     if (!cleanSessionType) {
-      return res.status(400).json({
-        ok: false,
-        message: "Missing session_type"
-      });
+      console.log("SESSION TYPE SAVE FAILED - MISSING VALUE:", { rawPhone, call_id });
+      return res.status(400).json({ ok: false, message: "Missing session_type" });
     }
 
-    const payment =
-      payments.get(normalizedPhone) ||
-      payments.get(call_id) ||
+    let payment =
+      (normalizedPhone && payments.get(normalizedPhone)) ||
+      (call_id && payments.get(call_id)) ||
       [...payments.values()].find((p) => {
         return (
-          normalizePhone(p.customerPhone) === normalizedPhone ||
-          normalizePhone(p.phone) === normalizedPhone ||
-          p.callId === call_id ||
-          p.blandCallId === call_id
+          p &&
+          (
+            normalizePhone(p.customerPhone) === normalizedPhone ||
+            normalizePhone(p.phone) === normalizedPhone ||
+            p.callId === call_id ||
+            p.blandCallId === call_id
+          )
         );
       });
 
     if (!payment) {
+      const recentPaid = [...payments.values()]
+        .filter(p => p && p.paid === true && p.sessionComplete !== true)
+        .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
+      payment = recentPaid[0] || null;
+
+      if (payment) {
+        console.log("SESSION TYPE SAVE - USED MOST RECENT PAID FALLBACK MATCH:", {
+          rawPhone,
+          normalizedPhone,
+          call_id,
+          matchedPhone: payment.customerPhone
+        });
+      }
+    }
+
+    if (!payment) {
       console.log("SESSION TYPE SAVE FAILED - NO PAYMENT RECORD:", {
-        phone,
+        rawPhone,
         normalizedPhone,
         call_id,
         session_type: cleanSessionType
@@ -939,9 +863,9 @@ const normalizedSessionType = normalizeSessionType(cleanSessionType);
       });
     }
 
-   payment.sessionType = normalizedSessionType;
-payment.selectedPersona = normalizedSessionType;
-payment.sessionLabel = normalizedSessionType;
+    payment.sessionType = normalizedSessionType;
+    payment.selectedPersona = normalizedSessionType;
+    payment.sessionLabel = normalizedSessionType;
     payment.blandCallId = call_id || payment.blandCallId || null;
 
     console.log("SESSION TYPE SAVED:", {
@@ -957,7 +881,6 @@ payment.sessionLabel = normalizedSessionType;
     });
   } catch (error) {
     console.error("SAVE SESSION TYPE ERROR:", error);
-
     return res.status(500).json({
       ok: false,
       message: "Failed to save session type",
@@ -1417,7 +1340,7 @@ const enqueue = response.enqueue({
   waitUrlMethod: "POST",
   action: `${process.env.BASE_URL}/twilio/queue-fallback`,
   method: "POST",
-  timeout: 15
+  timeout: 20
 });
 
 const activeSessionId =
@@ -1558,9 +1481,9 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  // Safety fallback: if Twilio does not end the Enqueue at 180 seconds,
+  // Safety fallback: if Twilio does not end the Enqueue at 15 seconds,
   // force the caller to leave the queue. This should trigger /twilio/queue-fallback.
-  if (queueTime >= 14) {
+  if (queueTime >= 15) {
     console.log("QUEUE WAIT TIME EXCEEDED - FORCING LEAVE TO FALLBACK:", {
       CallSid: req.body.CallSid,
       QueueSid: req.body.QueueSid,
@@ -1581,7 +1504,7 @@ app.post("/twilio/hold-music", (req, res) => {
   }
 
   response.play(
-    { loop: 1 },
+    { loop: 0 },
     "https://lyvvout-assets-2042.twil.io/twilio_hold_music_new.mp3"
   );
 
@@ -1667,7 +1590,7 @@ app.post("/twilio/queue-fallback", (req, res) => {
     queueResult === "redirected" ||
     (
       queueResult === "leave" &&
-      queueTime >= 14 &&
+      queueTime >= 15 &&
       !liveSessionAlreadyStarted
     );
 
