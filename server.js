@@ -1304,83 +1304,147 @@ fields: {
 });
 
 app.post("/bland/session-status", async (req, res) => {
-const {
-  payment,
-  phone,
-  callId,
-  rawPhone,
-  rawCallId
-} = findPaymentForBlandTimer(req);
+  const {
+    payment,
+    phone,
+    callId,
+    rawPhone,
+    rawCallId
+  } = findPaymentForBlandTimer(req);
 
-console.log("SESSION STATUS CHECK:", {
-  rawPhone,
-  phone,
-  rawCallId,
-  callId,
-  source: req.body.source,
-  foundPayment: !!payment
-});
-
-if (!payment || payment.paid !== true) {
-  return res.status(404).json({
-    active: false,
-    paid: false,
-    timer_started: false,
-    remaining_seconds: 0,
-    elapsed_seconds: 0,
-    total_session_seconds: 0,
-    two_minute_warning_due: false,
-    survey_due: false,
-    session_complete: true,
-    message: "No active paid session found."
+  console.log("SESSION STATUS CHECK:", {
+    rawPhone,
+    phone,
+    rawCallId,
+    callId,
+    source: req.body.source,
+    foundPayment: !!payment
   });
-}
-if (payment.timerStarted !== true || !payment.liveSessionEndsAt) {
+
+  if (!payment || payment.paid !== true) {
+    return res.status(404).json({
+      ok: false,
+      active: false,
+      paid: false,
+      timer_started: false,
+      remaining_seconds: 0,
+      elapsed_seconds: 0,
+      total_session_seconds: 0,
+      two_minute_warning_due: false,
+      survey_due: false,
+      session_complete: true,
+      message: "No active paid session found."
+    });
+  }
+
   const totalSessionSeconds =
     payment.totalSessionSeconds ||
     payment.sessionSeconds ||
     payment.plan?.seconds ||
     900;
 
-  return res.json({
-    active: true,
-    paid: true,
-    timer_started: payment.timerStarted === true,
-    call_id: payment.callId || callId || null,
-    remaining_seconds: totalSessionSeconds,
-    elapsed_seconds: 0,
-    total_session_seconds: totalSessionSeconds,
-    two_minute_warning_due: false,
-    survey_due: false,
-    session_complete: false,
-    message: "Paid session found, but timer has not started yet."
-  });
-}
+  const sessionType =
+    payment.sessionType ||
+    payment.session_type ||
+    payment.selectedPersona ||
+    payment.selected_persona ||
+    payment.sessionLabel ||
+    payment.session_label ||
+    "no_filter";
 
-const totalSessionSeconds =
-  payment.totalSessionSeconds ||
-  payment.sessionSeconds ||
-  payment.plan?.seconds ||
-  900;
+  const callerName =
+    payment.callerName ||
+    payment.customerName ||
+    payment.displayName ||
+    pendingCallerNames.get(payment.customerPhone) ||
+    pendingCallerNames.get(payment.phone) ||
+    pendingCallerNames.get(payment.callerPhone) ||
+    pendingCallerNames.get(phone) ||
+    "Caller";
 
-const remainingSeconds = getLiveRemainingSeconds(payment);
-const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
+  payment.sessionType = sessionType;
+  payment.session_type = sessionType;
+  payment.selectedPersona = sessionType;
+  payment.selected_persona = sessionType;
+  payment.sessionLabel = sessionType;
+  payment.session_label = sessionType;
 
-const twoMinuteWarningDue =
-  remainingSeconds <= 210 &&
-  remainingSeconds > 120 &&
-  payment.twoMinuteWarningSent !== true;
+  payment.callerName = callerName;
+  payment.customerName = callerName;
+  payment.displayName = callerName;
 
-const surveyDue =
-  remainingSeconds <= 75 &&
-  remainingSeconds > 0 &&
-  payment.surveySmsSent !== true;
+  if (payment.timerStarted !== true || !payment.liveSessionEndsAt) {
+    return res.json({
+      ok: true,
+      active: true,
+      paid: true,
+      timer_started: payment.timerStarted === true,
+
+      caller_name: callerName,
+      callerName: callerName,
+      customerName: callerName,
+
+      phone_number: payment.customerPhone || payment.phone || phone,
+      customerPhone: payment.customerPhone || payment.phone || phone,
+      customer_phone: payment.customerPhone || payment.phone || phone,
+
+      session_type: sessionType,
+      sessionType: sessionType,
+      selected_persona: sessionType,
+      selectedPersona: sessionType,
+      session_label: sessionType,
+      sessionLabel: sessionType,
+
+      call_id: payment.callId || callId || null,
+      session_id: payment.sessionId || payment.activeSessionId || null,
+
+      remaining_seconds: totalSessionSeconds,
+      elapsed_seconds: 0,
+      total_session_seconds: totalSessionSeconds,
+
+      two_minute_warning_due: false,
+      survey_due: false,
+      session_complete: false,
+
+      message: "Paid session found, but timer has not started yet."
+    });
+  }
+
+  const remainingSeconds = getLiveRemainingSeconds(payment);
+  const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
+
+  const twoMinuteWarningDue =
+    remainingSeconds <= 210 &&
+    remainingSeconds > 120 &&
+    payment.twoMinuteWarningSent !== true;
+
+  const surveyDue =
+    remainingSeconds <= 75 &&
+    remainingSeconds > 0 &&
+    payment.surveySmsSent !== true;
 
   const sessionComplete = remainingSeconds <= 0;
 
-  if (twoMinuteWarningDue) payment.twoMinuteWarningSent = true;
- if (surveyDue) payment.surveySmsSent = true;
-  if (sessionComplete) payment.sessionComplete = true;
+  if (twoMinuteWarningDue) {
+    payment.twoMinuteWarningSent = true;
+    payment.lastPromptType = "two_minute_warning";
+    payment.lastPromptAt = new Date().toISOString();
+  }
+
+  if (surveyDue) {
+    payment.surveySmsSent = true;
+    payment.surveyDueAt = new Date().toISOString();
+  }
+
+  if (sessionComplete) {
+    payment.sessionComplete = true;
+    payment.aiSessionActive = false;
+    payment.liveSessionActive = false;
+    payment.completedReason = payment.completedReason || "paid_time_expired";
+    payment.completedAt = payment.completedAt || new Date().toISOString();
+  }
+
+  payment.updatedAt = new Date().toISOString();
 
   console.log("SESSION STATUS RESULT:", {
     callId,
@@ -1388,23 +1452,56 @@ const surveyDue =
     elapsedSeconds,
     remainingSeconds,
     totalSessionSeconds,
+    sessionType,
+    callerName,
     twoMinuteWarningDue,
-    sessionComplete,
+    surveyDue,
+    sessionComplete
   });
 
   return res.json({
+    ok: true,
     active: !sessionComplete,
     paid: true,
+    timer_started: true,
+
+    caller_name: callerName,
+    callerName: callerName,
+    customerName: callerName,
+
+    phone_number: payment.customerPhone || payment.phone || phone,
+    customerPhone: payment.customerPhone || payment.phone || phone,
+    customer_phone: payment.customerPhone || payment.phone || phone,
+
+    session_type: sessionType,
+    sessionType: sessionType,
+    selected_persona: sessionType,
+    selectedPersona: sessionType,
+    session_label: sessionType,
+    sessionLabel: sessionType,
+
     call_id: payment.callId || callId || null,
+    session_id: payment.sessionId || payment.activeSessionId || null,
+
     remaining_seconds: remainingSeconds,
     elapsed_seconds: elapsedSeconds,
     total_session_seconds: totalSessionSeconds,
+
     two_minute_warning_due: twoMinuteWarningDue,
-   survey_due: surveyDue,
+    survey_due: surveyDue,
     session_complete: sessionComplete,
+
+    liveSessionStartedAt:
+      payment.liveSessionStartedAt ||
+      payment.aiSessionStartedAt ||
+      payment.sessionStartedAt ||
+      null,
+
+    liveSessionEndsAt: payment.liveSessionEndsAt || null,
+
     message: sessionComplete
       ? "Session complete."
-      : "Session is active.",
+      : "Session is active."
   });
 });
 
