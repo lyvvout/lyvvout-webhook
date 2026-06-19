@@ -769,9 +769,13 @@ const caller_name =
 
 app.post("/bland/save-session-type", (req, res) => {
   try {
+    console.log("SAVE SESSION TYPE REQUEST:", req.body);
+
     const rawPhone =
       req.body.phone_number ||
+      req.body.confirmed_phone_number ||
       req.body.phone ||
+      req.body.caller_number ||
       req.body.from ||
       req.body.callerPhone ||
       req.body.customerPhone ||
@@ -783,8 +787,15 @@ app.post("/bland/save-session-type", (req, res) => {
       req.body.bland_call_id ||
       "";
 
+    const session_type =
+      req.body.session_type ||
+      req.body.sessionType ||
+      req.body.selected_persona ||
+      req.body.selectedPersona ||
+      req.body.persona ||
+      "";
+
     const normalizedPhone = normalizePhone(rawPhone);
-    const session_type = req.body.session_type;
     const cleanSessionType = String(session_type || "").trim();
 
     const normalizeSessionType = (value) => {
@@ -794,15 +805,19 @@ app.post("/bland/save-session-type", (req, res) => {
         "1": "just_listen",
         "just listen": "just_listen",
         "just_listen": "just_listen",
+
         "2": "react_with_me",
         "react with me": "react_with_me",
         "react_with_me": "react_with_me",
+
         "3": "hype_session",
         "hype session": "hype_session",
         "hype_session": "hype_session",
+
         "4": "keep_it_real",
         "keep it real": "keep_it_real",
         "keep_it_real": "keep_it_real",
+
         "5": "no_filter",
         "no filter": "no_filter",
         "no_filter": "no_filter"
@@ -814,8 +829,17 @@ app.post("/bland/save-session-type", (req, res) => {
     const normalizedSessionType = normalizeSessionType(cleanSessionType);
 
     if (!cleanSessionType) {
-      console.log("SESSION TYPE SAVE FAILED - MISSING VALUE:", { rawPhone, call_id });
-      return res.status(400).json({ ok: false, message: "Missing session_type" });
+      console.log("SESSION TYPE SAVE FAILED - MISSING SESSION TYPE:", {
+        rawPhone,
+        normalizedPhone,
+        call_id,
+        body: req.body
+      });
+
+      return res.status(400).json({
+        ok: false,
+        message: "Missing session_type"
+      });
     }
 
     let payment =
@@ -824,27 +848,37 @@ app.post("/bland/save-session-type", (req, res) => {
       [...payments.values()].find((p) => {
         return (
           p &&
+          p.paid === true &&
+          p.sessionComplete !== true &&
           (
             normalizePhone(p.customerPhone) === normalizedPhone ||
             normalizePhone(p.phone) === normalizedPhone ||
+            normalizePhone(p.callerPhone) === normalizedPhone ||
             p.callId === call_id ||
-            p.blandCallId === call_id
+            p.blandCallId === call_id ||
+            p.fallbackBlandCallId === call_id
           )
         );
       });
 
     if (!payment) {
       const recentPaid = [...payments.values()]
-        .filter(p => p && p.paid === true && p.sessionComplete !== true)
-        .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
+        .filter((p) => p && p.paid === true && p.sessionComplete !== true)
+        .sort((a, b) => {
+          const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
+          const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
+          return bTime - aTime;
+        });
+
       payment = recentPaid[0] || null;
 
       if (payment) {
-        console.log("SESSION TYPE SAVE - USED MOST RECENT PAID FALLBACK MATCH:", {
+        console.log("SESSION TYPE SAVE - USED MOST RECENT ACTIVE PAID SESSION:", {
           rawPhone,
           normalizedPhone,
           call_id,
-          matchedPhone: payment.customerPhone
+          recoveredCustomerPhone: payment.customerPhone,
+          recoveredSessionType: payment.sessionType
         });
       }
     }
@@ -864,23 +898,42 @@ app.post("/bland/save-session-type", (req, res) => {
     }
 
     payment.sessionType = normalizedSessionType;
+    payment.session_type = normalizedSessionType;
     payment.selectedPersona = normalizedSessionType;
+    payment.selected_persona = normalizedSessionType;
     payment.sessionLabel = normalizedSessionType;
+    payment.session_label = normalizedSessionType;
     payment.blandCallId = call_id || payment.blandCallId || null;
+    payment.updatedAt = new Date().toISOString();
 
     console.log("SESSION TYPE SAVED:", {
       phone: normalizedPhone,
       call_id,
-      sessionType: payment.sessionType
+      sessionType: payment.sessionType,
+      session_type: payment.session_type,
+      selectedPersona: payment.selectedPersona
     });
 
     return res.json({
       ok: true,
       message: "Session type saved",
-      sessionType: payment.sessionType
+
+      sessionType: payment.sessionType,
+      session_type: payment.session_type,
+
+      selectedPersona: payment.selectedPersona,
+      selected_persona: payment.selected_persona,
+
+      sessionLabel: payment.sessionLabel,
+      session_label: payment.session_label,
+
+      phone_number: payment.customerPhone || payment.phone || normalizedPhone,
+      customerPhone: payment.customerPhone || payment.phone || normalizedPhone,
+      call_id: payment.callId || call_id || null
     });
   } catch (error) {
     console.error("SAVE SESSION TYPE ERROR:", error);
+
     return res.status(500).json({
       ok: false,
       message: "Failed to save session type",
