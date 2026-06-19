@@ -1695,36 +1695,45 @@ app.post("/bland/session-status", async (req, res) => {
   const remainingSeconds = getLiveRemainingSeconds(payment);
   const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
 
-  const twoMinuteWarningDue =
-    remainingSeconds <= 210 &&
-    remainingSeconds > 120 &&
-    payment.twoMinuteWarningSent !== true;
+const sessionComplete = remainingSeconds <= 0;
 
-  const surveyDue =
-    remainingSeconds <= 75 &&
-    remainingSeconds > 0 &&
-    payment.surveySmsSent !== true;
+/*
+  Bland does not check status every second.
+  It may jump from 12 minutes left to 1–2 minutes left.
+  So these windows need to be forgiving.
+*/
 
-  const sessionComplete = remainingSeconds <= 0;
+const twoMinuteWarningDue =
+  remainingSeconds <= 180 &&
+  remainingSeconds > 0 &&
+  payment.twoMinuteWarningSent !== true;
 
-  if (twoMinuteWarningDue) {
-    payment.twoMinuteWarningSent = true;
-    payment.lastPromptType = "two_minute_warning";
-    payment.lastPromptAt = new Date().toISOString();
-  }
+const surveyDue =
+  payment.twoMinuteWarningSent === true &&
+  remainingSeconds <= 120 &&
+  payment.surveySmsSent !== true;
 
-  if (surveyDue) {
-    payment.surveySmsSent = true;
-    payment.surveyDueAt = new Date().toISOString();
-  }
+ if (twoMinuteWarningDue) {
+  payment.twoMinuteWarningSent = true;
+  payment.lastPromptType = "two_minute_warning";
+  payment.lastPromptAt = new Date().toISOString();
+}
 
-  if (sessionComplete) {
-    payment.sessionComplete = true;
-    payment.aiSessionActive = false;
-    payment.liveSessionActive = false;
-    payment.completedReason = payment.completedReason || "paid_time_expired";
-    payment.completedAt = payment.completedAt || new Date().toISOString();
-  }
+/*
+  Do not mark surveySmsSent here.
+  The actual survey SMS route should mark it sent only after Twilio successfully sends the message.
+*/
+if (surveyDue) {
+  payment.surveyDueAt = new Date().toISOString();
+}
+
+if (sessionComplete) {
+  payment.sessionComplete = true;
+  payment.aiSessionActive = false;
+  payment.liveSessionActive = false;
+  payment.completedReason = payment.completedReason || "paid_time_expired";
+  payment.completedAt = payment.completedAt || new Date().toISOString();
+}
 
   payment.updatedAt = new Date().toISOString();
 
