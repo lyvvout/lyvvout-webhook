@@ -2720,83 +2720,139 @@ app.post("/send-survey-sms", async (req, res) => {
   try {
     console.log("SURVEY SMS REQUEST:", req.body);
 
-const rawSurveyPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
+    const pickRealValue = (...values) => {
+      for (const value of values) {
+        if (!value) continue;
+        if (isTemplateValue(value)) continue;
 
-const surveyCallId =
-  req.body.call_id ||
-  req.body.callId ||
-  req.body.bland_call_id ||
-  "";
+        const clean = String(value).trim();
+        if (!clean) continue;
 
-let phone_number = normalizePhone(rawSurveyPhone);
+        return clean;
+      }
 
-if (!phone_number && surveyCallId) {
-  const payment =
-    payments.get(surveyCallId) ||
-    [...payments.values()].find((p) =>
-      p.callId === surveyCallId ||
-      p.blandCallId === surveyCallId ||
-      p.fallbackBlandCallId === surveyCallId ||
-      p.sessionId === surveyCallId ||
-      p.activeSessionId === surveyCallId
+      return "";
+    };
+
+    const rawPhone = pickRealValue(
+      req.body.phone_number,
+      req.body.phone,
+      req.body.from,
+      req.body.customerPhone,
+      req.body.customer_phone,
+      req.body.callerPhone,
+      req.body.caller_number
     );
 
-  if (payment) {
-    phone_number = normalizePhone(
-      payment.customerPhone ||
-      payment.phone ||
-      payment.callerPhone ||
-      ""
+    const phone = normalizePhone(rawPhone);
+
+    const callId = pickRealValue(
+      req.body.call_id,
+      req.body.callId,
+      req.body.bland_call_id,
+      req.body.fallback_bland_call_id,
+      req.body.live_call_sid
     );
-  }
-}
 
-if (!phone_number) {
-  return res.status(400).json({
-    success: false,
-    ok: false,
-    error: "Missing phone_number"
-  });
-}
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId ||
+            p.liveCallSid === callId ||
+            p.fallbackTwilioCallSid === callId
+          )
+        );
+      });
 
-    const message =
-      "LyvvOut: Thank you for calling. Please take 20 seconds to share your experience: https://lyvvout.com/#survey. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
+    if (!payment) {
+      payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
+    }
 
-    const sms = await twilioClient.messages.create({
-      body: message,
+    const toPhone = normalizePhone(
+      payment?.customerPhone ||
+      payment?.phone ||
+      payment?.callerPhone ||
+      phone
+    );
+
+    if (!toPhone || isTemplateValue(toPhone)) {
+      console.log("SURVEY SMS SKIPPED - NO REAL PHONE:", {
+        rawPhone,
+        phone,
+        callId,
+        foundPayment: !!payment
+      });
+
+      return res.status(400).json({
+        ok: false,
+        sent: false,
+        message: "No valid phone number available for survey SMS."
+      });
+    }
+
+    if (payment?.surveySmsSent === true) {
+      console.log("SURVEY SMS SKIPPED - ALREADY SENT:", {
+        toPhone,
+        customerPhone: payment.customerPhone
+      });
+
+      return res.json({
+        ok: true,
+        sent: false,
+        already_sent: true,
+        message: "Survey SMS already sent."
+      });
+    }
+
+    const surveyText =
+      "Thank you for calling LyvvOut. Please take a quick moment to share your experience: https://lyvvout.com/#survey. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
+
+    const msg = await client.messages.create({
+      to: toPhone,
       from: process.env.TWILIO_PHONE_NUMBER,
-      to: phone_number
+      body: surveyText
     });
+
+    if (payment) {
+      payment.surveySmsSent = true;
+      payment.surveySmsSentAt = new Date().toISOString();
+      payment.surveySmsSid = msg.sid;
+      payment.updatedAt = new Date().toISOString();
+    }
 
     console.log("SURVEY SMS SENT:", {
-      to: phone_number,
-      sid: sms.sid
+      to: toPhone,
+      sid: msg.sid
     });
 
-  return res.json({
-  success: true,
-  ok: true,
-  sid: sms.sid,
-  survey_sms_sent: true,
-  message: "Survey SMS sent"
-});
+    return res.json({
+      ok: true,
+      sent: true,
+      sid: msg.sid,
+      phone_number: toPhone,
+      message: "Survey SMS sent."
+    });
   } catch (error) {
     console.error("SURVEY SMS ERROR:", error);
 
     return res.status(500).json({
-      success: false,
-      error: "Failed to send survey SMS",
-      details: error.message
+      ok: false,
+      sent: false,
+      message: "Survey SMS failed.",
+      error: error.message
     });
   }
 });
-
 
 app.listen(PORT, () => {
   console.log(`LyvvOut webhook server running on port ${PORT}`);
