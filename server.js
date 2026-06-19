@@ -2055,8 +2055,13 @@ app.post("/twilio/hold-music", (req, res) => {
     CurrentQueueSize: req.body.CurrentQueueSize
   });
 
-  // Do NOT leave immediately at QueueTime 0.
-  // Give Twilio/Flex a few seconds to create the TaskRouter task first.
+  /*
+    Safe queue behavior:
+    - First hit: say one short line, play short music, pause.
+    - Second hit after queueTime >= 8: leave queue and route to AI fallback.
+    - Do not leave immediately at QueueTime 0.
+  */
+
   if (queueTime >= 8) {
     console.log("LEAVING QUEUE TO AI FALLBACK:", {
       CallSid: req.body.CallSid,
@@ -2070,9 +2075,6 @@ app.post("/twilio/hold-music", (req, res) => {
     return res.send(response.toString());
   }
 
-  // Say this once, then pause. When Twilio finishes this TwiML,
-  // it will request this waitUrl again. On the next hit, QueueTime
-  // should be >= 8 and the route will return <Leave/>.
   response.say(
     {
       voice: "Polly.Joanna",
@@ -2081,7 +2083,15 @@ app.post("/twilio/hold-music", (req, res) => {
     "One moment. We are connecting your private session now."
   );
 
-  response.pause({ length: 8 });
+  response.play(
+    {
+      loop: 1
+    },
+    process.env.TWILIO_HOLD_MUSIC_URL ||
+      "https://lyvvout-assets-2042.twil.io/hold_music_short.mp3"
+  );
+
+  response.pause({ length: 2 });
 
   res.type("text/xml");
   return res.send(response.toString());
