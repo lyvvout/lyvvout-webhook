@@ -1695,33 +1695,39 @@ app.post("/bland/session-status", async (req, res) => {
   const remainingSeconds = getLiveRemainingSeconds(payment);
   const elapsedSeconds = Math.max(totalSessionSeconds - remainingSeconds, 0);
 
-const sessionComplete = remainingSeconds <= 0;
+const rawSessionComplete = remainingSeconds <= 0;
 
 /*
-  Bland does not check status every second.
-  It may jump from 12 minutes left to 1–2 minutes left.
-  So these windows need to be forgiving.
+  Bland does not check every second.
+  It may jump from 12 minutes left to 2 minutes left, then straight to the end.
+  These windows must be wide enough so the warning and survey do not get skipped.
 */
 
+const warningThresholdSeconds = 300; // 5-minute warning window
+const surveyThresholdSeconds = 60;   // final-minute survey window
+
 const twoMinuteWarningDue =
-  remainingSeconds <= 300 &&
-  remainingSeconds > 0 &&
+  remainingSeconds <= warningThresholdSeconds &&
+  remainingSeconds > surveyThresholdSeconds &&
   payment.twoMinuteWarningSent !== true;
 
 const surveyDue =
-  payment.twoMinuteWarningSent === true &&
-  remainingSeconds <= 300 &&
+  remainingSeconds <= surveyThresholdSeconds &&
   payment.surveySmsSent !== true;
 
- if (twoMinuteWarningDue) {
+const sessionComplete =
+  rawSessionComplete &&
+  payment.surveySmsSent === true;
+
+if (twoMinuteWarningDue) {
   payment.twoMinuteWarningSent = true;
-  payment.lastPromptType = "two_minute_warning";
+  payment.lastPromptType = "session_warning";
   payment.lastPromptAt = new Date().toISOString();
 }
 
 /*
-  Do not mark surveySmsSent here.
-  The actual survey SMS route should mark it sent only after Twilio successfully sends the message.
+  Do NOT mark surveySmsSent here.
+  Only /send-survey-sms should mark surveySmsSent true after Twilio successfully sends the SMS.
 */
 if (surveyDue) {
   payment.surveyDueAt = new Date().toISOString();
@@ -1750,50 +1756,60 @@ if (sessionComplete) {
     sessionComplete
   });
 
-  return res.json({
-    ok: true,
-    active: !sessionComplete,
-    paid: true,
-    timer_started: true,
+return res.json({
+  ok: true,
+  active: !sessionComplete,
+  session_active: !sessionComplete,
+  paid: true,
+  timer_started: true,
 
-    caller_name: callerName,
-    callerName: callerName,
-    customerName: callerName,
+  caller_name: callerName,
+  callerName: callerName,
+  customerName: callerName,
 
-    phone_number: payment.customerPhone || payment.phone || phone,
-    customerPhone: payment.customerPhone || payment.phone || phone,
-    customer_phone: payment.customerPhone || payment.phone || phone,
+  phone_number: payment.customerPhone || payment.phone || phone,
+  customerPhone: payment.customerPhone || payment.phone || phone,
+  customer_phone: payment.customerPhone || payment.phone || phone,
 
-    session_type: sessionType,
-    sessionType: sessionType,
-    selected_persona: sessionType,
-    selectedPersona: sessionType,
-    session_label: sessionType,
-    sessionLabel: sessionType,
+  session_type: sessionType,
+  sessionType: sessionType,
+  selected_persona: sessionType,
+  selectedPersona: sessionType,
+  session_label: sessionType,
+  sessionLabel: sessionType,
 
-    call_id: payment.callId || callId || null,
-    session_id: payment.sessionId || payment.activeSessionId || null,
+  call_id: payment.callId || callId || null,
+  session_id: payment.sessionId || payment.activeSessionId || null,
 
-    remaining_seconds: remainingSeconds,
-    elapsed_seconds: elapsedSeconds,
-    total_session_seconds: totalSessionSeconds,
+  remaining_seconds: remainingSeconds,
+  remainingSeconds: remainingSeconds,
 
-    two_minute_warning_due: twoMinuteWarningDue,
-    survey_due: surveyDue,
-    session_complete: sessionComplete,
+  elapsed_seconds: elapsedSeconds,
+  elapsedSeconds: elapsedSeconds,
 
-    liveSessionStartedAt:
-      payment.liveSessionStartedAt ||
-      payment.aiSessionStartedAt ||
-      payment.sessionStartedAt ||
-      null,
+  total_session_seconds: totalSessionSeconds,
+  totalSessionSeconds: totalSessionSeconds,
 
-    liveSessionEndsAt: payment.liveSessionEndsAt || null,
+  two_minute_warning_due: twoMinuteWarningDue,
+  twoMinuteWarningDue: twoMinuteWarningDue,
 
-    message: sessionComplete
-      ? "Session complete."
-      : "Session is active."
-  });
+  survey_due: surveyDue,
+  surveyDue: surveyDue,
+
+  session_complete: sessionComplete,
+  sessionComplete: sessionComplete,
+
+  liveSessionStartedAt:
+    payment.liveSessionStartedAt ||
+    payment.aiSessionStartedAt ||
+    payment.sessionStartedAt ||
+    null,
+
+  liveSessionEndsAt: payment.liveSessionEndsAt || null,
+
+  message: sessionComplete
+    ? "Session complete."
+    : "Session is active."
 });
 
 app.post("/twilio/spanish-ai-hold", async (req, res) => {
@@ -2716,6 +2732,7 @@ if (!phone_number) {
       details: error.message
     });
   }
+});
 });
 
 app.post("/send-survey-sms", async (req, res) => {
