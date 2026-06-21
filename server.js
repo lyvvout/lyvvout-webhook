@@ -161,13 +161,13 @@ function findPaymentForBlandTimer(req) {
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "25",
+    price: "14.99",
     seconds: 900,
   },
 
   "https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "25",
+    price: "14.99",
     seconds: 900,
   },
 };
@@ -228,7 +228,7 @@ app.post(
       if (!matchedPlan) {
         const amount = session.amount_total;
 
-        if (amount === 2500) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
+        if (amount === 1499) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
       }
 
       const now = new Date();
