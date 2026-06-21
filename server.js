@@ -1838,6 +1838,7 @@ return res.json({
     ? "Session complete."
     : "Session is active."
 });
+});
 
 app.post("/twilio/spanish-ai-hold", async (req, res) => {
   try {
@@ -2760,7 +2761,7 @@ if (!phone_number) {
     });
   }
 });
-});
+
 
 app.post("/send-survey-sms", async (req, res) => {
   try {
