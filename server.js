@@ -1725,22 +1725,26 @@ app.post("/bland/session-status", async (req, res) => {
 const rawSessionComplete = remainingSeconds <= 0;
 
 /*
-  Bland does not check every second.
-  It may jump from 12 minutes left to 2 minutes left, then straight to the end.
-  These windows must be wide enough so the warning and survey do not get skipped.
+  Bland/Twilio/Flex may not check every exact second.
+  These windows prevent the warning and survey from being skipped.
 */
 
-const warningThresholdSeconds = 300; // 5-minute warning window
-const surveyThresholdSeconds = 60;   // final-minute survey window
+const warningWindowStart = 300; // starts at 5 minutes left
+const warningWindowEnd = 50;    // ends at 50 seconds left
+
+const surveyWindowStart = 120;  // starts at 2 minutes left
+const surveyWindowEnd = 10;     // ends at 10 seconds left
 
 const twoMinuteWarningDue =
-  remainingSeconds <= warningThresholdSeconds &&
-  remainingSeconds > surveyThresholdSeconds &&
+  remainingSeconds <= warningWindowStart &&
+  remainingSeconds >= warningWindowEnd &&
   payment.twoMinuteWarningSent !== true;
 
 const surveyDue =
-  remainingSeconds <= surveyThresholdSeconds &&
-  payment.surveySmsSent !== true;
+  remainingSeconds <= surveyWindowStart &&
+  remainingSeconds >= surveyWindowEnd &&
+  payment.surveySmsSent !== true &&
+  payment.surveyReminderSent !== true;
 
 const sessionComplete =
   rawSessionComplete &&
@@ -1752,12 +1756,22 @@ if (twoMinuteWarningDue) {
   payment.lastPromptAt = new Date().toISOString();
 }
 
+if (surveyDue) {
+  payment.surveyDue = true;
+  payment.surveyDueAt = new Date().toISOString();
+}
+
 /*
   Do NOT mark surveySmsSent here.
   Only /send-survey-sms should mark surveySmsSent true after Twilio successfully sends the SMS.
 */
-if (surveyDue) {
-  payment.surveyDueAt = new Date().toISOString();
+
+if (sessionComplete) {
+  payment.sessionComplete = true;
+  payment.aiSessionActive = false;
+  payment.liveSessionActive = false;
+  payment.completedReason = payment.completedReason || "paid_time_expired";
+  payment.completedAt = payment.completedAt || new Date().toISOString();
 }
 
 if (sessionComplete) {
@@ -2872,17 +2886,27 @@ app.post("/send-survey-sms", async (req, res) => {
       body: surveyText
     });
 
-    if (payment) {
-      payment.surveySmsSent = true;
-      payment.surveySmsSentAt = new Date().toISOString();
-      payment.surveySmsSid = msg.sid;
-      payment.updatedAt = new Date().toISOString();
-    }
+  if (payment) {
+  payment.surveySmsSent = true;
+  payment.surveySmsSentAt = new Date().toISOString();
 
-    console.log("SURVEY SMS SENT:", {
-      to: toPhone,
-      sid: msg.sid
-    });
+  payment.surveyReminderSent = true;
+  payment.surveyDue = false;
+
+  payment.surveySmsSid = msg.sid;
+
+  payment.completedReason =
+    payment.completedReason || "survey_sent";
+
+  payment.updatedAt = new Date().toISOString();
+}
+
+ console.log("SURVEY SMS SENT:", {
+  to: toPhone,
+  sid: msg.sid,
+  surveySmsSent: true,
+  surveyReminderSent: true
+});
 
     return res.json({
       ok: true,
