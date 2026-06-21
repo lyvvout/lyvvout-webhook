@@ -1466,52 +1466,79 @@ app.post("/bland/session-start", async (req, res) => {
 });
 
 app.post("/bland/two-minute-warning", async (req, res) => {
-  console.log("TWO MINUTE WARNING REQUEST:", req.body);
+  try {
+    console.log("TWO MINUTE WARNING REQUEST:", req.body);
 
-  const normalizePhone = (value) => {
-    if (!value) return "";
-    const digits = String(value).replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return String(value).trim();
-  };
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.from ||
+      req.body.customerPhone ||
+      req.body.customer_phone ||
+      "";
 
-  const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  req.body.callerPhone ||
-  req.body.customerPhone ||
-  "";
-  const phone = normalizePhone(rawPhone);
-  const callId = req.body.call_id || req.body.callId || "";
+    const phone = normalizePhone(rawPhone);
 
-  const payment =
-    payments.get(phone) ||
-    payments.get(callId) ||
-    [...payments.values()].find((p) => {
-      return (
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          p.callId === callId
-        )
-      );
+    const callId =
+      req.body.call_id ||
+      req.body.callId ||
+      req.body.bland_call_id ||
+      "";
+
+    let payment =
+      (phone && payments.get(phone)) ||
+      (callId && payments.get(callId)) ||
+      [...payments.values()].find((p) => {
+        return (
+          p &&
+          p.paid === true &&
+          (
+            normalizePhone(p.customerPhone) === phone ||
+            normalizePhone(p.phone) === phone ||
+            normalizePhone(p.callerPhone) === phone ||
+            p.callId === callId ||
+            p.blandCallId === callId ||
+            p.fallbackBlandCallId === callId ||
+            p.liveCallSid === callId ||
+            p.fallbackTwilioCallSid === callId
+          )
+        );
+      });
+
+    if (!payment) {
+      payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
+    }
+
+    if (payment) {
+      payment.twoMinuteWarningSent = true;
+      payment.lastPromptType = "session_warning";
+      payment.lastPromptAt = new Date().toISOString();
+      payment.updatedAt = new Date().toISOString();
+    }
+
+    console.log("TWO MINUTE WARNING RECORDED:", {
+      foundPayment: !!payment,
+      customerPhone: payment?.customerPhone || phone,
+      callId
     });
 
-  if (!payment) {
-    return res.json({ ok: false, message: "No payment record found" });
+    return res.json({
+      ok: true,
+      warning_sent: true,
+      two_minute_warning_sent: true,
+      message: "Two-minute warning recorded."
+    });
+  } catch (error) {
+    console.error("TWO MINUTE WARNING ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      warning_sent: false,
+      two_minute_warning_sent: false,
+      message: "Two-minute warning failed.",
+      error: error.message
+    });
   }
-
-  payment.twoMinuteWarningSent = true;
-  payment.currentPrompt = "2-MINUTE WARNING";
-  payment.currentPromptScript = "You have about two minutes remaining in your session. We are going to begin gently wrapping up.";
-  payment.lastPromptType = "two_minute_warning";
-  payment.lastPromptAt = new Date().toISOString();
-
-  console.log("TWO MINUTE WARNING FIRED:", { phone, callId });
-
-  return res.json({ ok: true, message: "Two minute warning recorded" });
 });
 
 
