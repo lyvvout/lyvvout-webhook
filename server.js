@@ -2090,7 +2090,7 @@ app.post("/twilio/hold-music", (req, res) => {
       voice: "Polly.Joanna",
       language: "en-US"
     },
-    "We are connecting your private session now."
+    "Hold please, we are connecting your private session now."
   );
 
   response.pause({ length: 8 });
