@@ -1704,13 +1704,13 @@ const sessionComplete = remainingSeconds <= 0;
 */
 
 const twoMinuteWarningDue =
-  remainingSeconds <= 180 &&
+  remainingSeconds <= 300 &&
   remainingSeconds > 0 &&
   payment.twoMinuteWarningSent !== true;
 
 const surveyDue =
   payment.twoMinuteWarningSent === true &&
-  remainingSeconds <= 120 &&
+  remainingSeconds <= 300 &&
   payment.surveySmsSent !== true;
 
  if (twoMinuteWarningDue) {
