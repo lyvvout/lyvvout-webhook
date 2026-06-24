@@ -29,6 +29,17 @@ function normalizePhone(value) {
   return String(value).trim();
 }
 
+function formatPhoneForSpeech(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const last10 = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits;
+
+  if (last10.length !== 10) return phone;
+
+  return `${last10.slice(0, 3)}-${last10.slice(3, 6)}-${last10.slice(6)}`;
+}
+
 function formatSessionTypeForAirtable(value) {
   const normalized = String(value || "").toLowerCase().trim();
 
@@ -612,15 +623,43 @@ app.post("/twilio/collect-name", (req, res) => {
   res.send(response.toString());
 });
 
-app.post("/twilio/collect-phone", async (req, res) => {
+app.post("/twilio/collect-phone", (req, res) => {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
 
   const callSid = req.body.CallSid;
-  const digits = req.body.Digits;
-  const phone = normalizePhone(digits);
+  const digits = String(req.body.Digits || "").replace(/\D/g, "");
 
   const payment = payments.get(callSid) || {};
+  const isSpanish = payment.language === "spanish";
+
+  if (digits.length < 10) {
+    const gather = response.gather({
+      input: "dtmf",
+      action: "/twilio/collect-phone",
+      method: "POST",
+      timeout: 20,
+      finishOnKey: "#"
+    });
+
+    gather.say(
+      {
+        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
+        language: isSpanish ? "es-MX" : "en-US"
+      },
+      isSpanish
+        ? "No recibí un número de teléfono completo. Por favor ingrese su número de diez dígitos y luego presione la tecla numeral."
+        : "I did not receive a full phone number. Please enter your ten digit phone number and then press the pound key."
+    );
+
+    response.redirect("/twilio/collect-phone");
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  const phone = normalizePhone(digits);
+
   payment.customerPhone = phone;
   payment.phone = phone;
   payment.updatedAt = new Date().toISOString();
@@ -630,22 +669,80 @@ app.post("/twilio/collect-phone", async (req, res) => {
 
   pendingCallerNames.set(phone, payment.callerName || "Caller");
 
+  const spokenPhone = formatPhoneForSpeech(phone);
+
+  const gather = response.gather({
+    numDigits: 1,
+    action: "/twilio/confirm-phone",
+    method: "POST",
+    timeout: 10
+  });
+
+  gather.say(
+    {
+      voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
+      language: isSpanish ? "es-MX" : "en-US"
+    },
+    isSpanish
+      ? `Tengo su número como ${spokenPhone}. Si es correcto, presione 1. Para ingresarlo nuevamente, presione 2.`
+      : `I have your phone number as ${spokenPhone}. If that is correct, press 1. To re-enter it, press 2.`
+  );
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/confirm-phone", async (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const digit = req.body.Digits;
+
+  const payment = payments.get(callSid) || {};
+  const isSpanish = payment.language === "spanish";
+
+  if (digit === "2") {
+    const gather = response.gather({
+      input: "dtmf",
+      action: "/twilio/collect-phone",
+      method: "POST",
+      timeout: 20,
+      finishOnKey: "#"
+    });
+
+    gather.say(
+      {
+        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
+        language: isSpanish ? "es-MX" : "en-US"
+      },
+      isSpanish
+        ? "No hay problema. Ingrese nuevamente su número de teléfono de diez dígitos, y luego presione la tecla de número."
+        : "No problem. Please re-enter your ten digit phone number, then press the pound key."
+    );
+
+    response.redirect("/twilio/collect-phone");
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
   try {
     await twilioClient.messages.create({
-      to: phone,
+      to: payment.customerPhone,
       from: process.env.TWILIO_PHONE_NUMBER,
       body:
-        payment.language === "spanish"
+        isSpanish
           ? "LyvvOut: Aquí está su enlace seguro de pago para su sesión de 15 minutos de LyvvOut: https://lyvvout.com/#payment. Responda STOP para cancelar mensajes. Responda HELP para ayuda. Pueden aplicarse tarifas de mensajes y datos."
           : "LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply."
     });
 
     response.say(
       {
-        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-        language: payment.language === "spanish" ? "es-MX" : "en-US"
+        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
+        language: isSpanish ? "es-MX" : "en-US"
       },
-      payment.language === "spanish"
+      isSpanish
         ? "Le acabamos de enviar un enlace seguro de pago por mensaje de texto. Complete el pago usando el mismo número de teléfono que proporcionó."
         : "We just texted your secure payment link. Please complete payment using the same phone number you entered."
     );
@@ -659,20 +756,21 @@ app.post("/twilio/collect-phone", async (req, res) => {
 
     gather.say(
       {
-        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-        language: payment.language === "spanish" ? "es-MX" : "en-US"
+        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
+        language: isSpanish ? "es-MX" : "en-US"
       },
-      payment.language === "spanish"
+      isSpanish
         ? "Cuando complete el pago, presione 1 para continuar."
         : "When you complete payment, press 1 to continue."
     );
-
   } catch (error) {
     console.error("TWILIO PAYMENT SMS ERROR:", error.message);
 
     response.say(
-      { voice: "Polly.Kendra", language: "en-US" },
-      "We could not send the payment text. Please try again later."
+      { voice: isSpanish ? "Polly.Mia" : "Polly.Kendra", language: isSpanish ? "es-MX" : "en-US" },
+      isSpanish
+        ? "No pudimos enviar el mensaje de pago. Por favor intente nuevamente más tarde."
+        : "We could not send the payment text. Please try again later."
     );
 
     response.hangup();
