@@ -517,7 +517,7 @@ app.post("/twilio/voice", (req, res) => {
   });
 
   gather.say(
-    { voice: "alice", language: "en-US" },
+    { voice:  "Polly.Kendra", language: "en-US" },
     "Welcome to LyvvOut,  a confidential, judgment-free hotline. I'm your intake guide. This call is completely private. Nothing is recorded. I am going to collect a few quick details to get your session started. Press 1 for English. Press 2 for Spanish."
   );
 
@@ -561,12 +561,12 @@ app.post("/twilio/collect-language", (req, res) => {
 
   if (language === "spanish") {
     gather.say(
-      { voice: "alice", language: "es-MX" },
+      { voice: "Polly.Mia", language: "es-MX" },
       "Por favor, diga su nombre después del tono."
     );
   } else {
     gather.say(
-      { voice: "alice", language: "en-US" },
+      { voice:  "Polly.Kendra", language: "en-US" },
       "Please say your name after the tone."
     );
   }
@@ -600,7 +600,7 @@ app.post("/twilio/collect-name", (req, res) => {
   });
 
   gather.say(
-    { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+    { voice: "Polly.Mia", language: payment.language === "spanish" ? "es-MX" : "en-US" },
     payment.language === "spanish"
       ? "Ahora ingrese su número de teléfono de diez dígitos, luego presione la tecla numeral."
       : "Now enter your ten digit phone number, then press the pound key."
@@ -631,33 +631,62 @@ app.post("/twilio/collect-phone", async (req, res) => {
   pendingCallerNames.set(phone, payment.callerName || "Caller");
 
   try {
-  await twilioClient.messages.create({
-  to: phone,
-  from: process.env.TWILIO_PHONE_NUMBER,
-  body:
-    payment.language === "spanish"
-      ? "LyvvOut: Aquí está su enlace seguro de pago para su sesión de 15 minutos de LyvvOut: https://lyvvout.com/#payment. Responda STOP para cancelar mensajes. Responda HELP para ayuda. Pueden aplicarse tarifas de mensajes y datos."
-      : "LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply."
-});
+    await twilioClient.messages.create({
+      to: phone,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      body:
+        payment.language === "spanish"
+          ? "LyvvOut: Aquí está su enlace seguro de pago para su sesión de 15 minutos de LyvvOut: https://lyvvout.com/#payment. Responda STOP para cancelar mensajes. Responda HELP para ayuda. Pueden aplicarse tarifas de mensajes y datos."
+          : "LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply."
+    });
 
     response.say(
-      { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+      {
+        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+        language: payment.language === "spanish" ? "es-MX" : "en-US"
+      },
       payment.language === "spanish"
-        ? "Le enviamos el enlace de pago por mensaje de texto. Complete el pago para continuar."
-        : "We just texted your secure payment link. Please complete payment to continue."
+        ? "Le acabamos de enviar un enlace seguro de pago por mensaje de texto. Complete el pago usando el mismo número de teléfono que proporcionó."
+        : "We just texted your secure payment link. Please complete payment using the same phone number you entered."
     );
 
-    response.redirect("/twilio/wait-for-payment");
+    const gather = response.gather({
+      numDigits: 1,
+      action: "/twilio/check-payment",
+      method: "POST",
+      timeout: 60
+    });
+
+    gather.say(
+      {
+        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+        language: payment.language === "spanish" ? "es-MX" : "en-US"
+      },
+      payment.language === "spanish"
+        ? "Cuando complete el pago, presione 1 para continuar."
+        : "When you complete payment, press 1 to continue."
+    );
+
   } catch (error) {
     console.error("TWILIO PAYMENT SMS ERROR:", error.message);
 
     response.say(
-      { voice: "alice", language: "en-US" },
+      { voice: "Polly.Kendra", language: "en-US" },
       "We could not send the payment text. Please try again later."
     );
 
     response.hangup();
   }
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/check-payment", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  response.redirect("/twilio/wait-for-payment");
 
   res.type("text/xml");
   res.send(response.toString());
@@ -702,10 +731,14 @@ app.post("/twilio/wait-for-payment", (req, res) => {
       payment.twilioCallSid = callSid;
       payments.set(callSid, payment);
     }
+
     if (from) payments.set(from, payment);
 
     response.say(
-      { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+      {
+        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+        language: payment.language === "spanish" ? "es-MX" : "en-US"
+      },
       payment.language === "spanish"
         ? "Pago confirmado. Continuemos."
         : "Payment confirmed. Let's continue."
@@ -714,7 +747,10 @@ app.post("/twilio/wait-for-payment", (req, res) => {
     response.redirect("/twilio/collect-session-type");
   } else {
     response.say(
-      { voice: "alice", language: payment?.language === "spanish" ? "es-MX" : "en-US" },
+      {
+        voice: payment?.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+        language: payment?.language === "spanish" ? "es-MX" : "en-US"
+      },
       payment?.language === "spanish"
         ? "Aún estamos esperando la confirmación del pago. Permanezca en la línea."
         : "We are still waiting for payment confirmation. Please stay on the line."
@@ -762,12 +798,12 @@ app.post("/twilio/collect-session-type", (req, res) => {
 
   if (language === "spanish") {
     gather.say(
-  { voice: "alice", language: "es-MX" },
+  { voice: "Polly.Mia", language: "es-MX" },
   "Ahora elija el tono de su sesión. Presione 1 para Solo Escuchar: silencio, presencia, sin consejos. Presione 2 para Reaccionar Conmigo: validación y reacciones reales. Presione 3 para Sesión de Ánimo: apoyo, motivación y energía positiva. Presione 4 para Hablar Claro: honesto, firme y directo. Presione 5 para Sin Filtro: crudo, expresivo y sin juicio."
 );
   } else {
     gather.say(
-  { voice: "alice", language: "en-US" },
+  { voice:  "Polly.Kendra", language: "en-US" },
   "Now let’s set the tone for your session. Press 1 for Just Listen: quiet, present, no advice. Press 2 for React With Me: validation and real reactions. Press 3 for Hype Session: uplifting and fully in your corner. Press 4 for Keep It Real: honest, grounded, and direct. Press 5 for No Filter: raw, expressive, zero judgment."
 );
   }
@@ -819,12 +855,12 @@ app.post("/twilio/collect-voice-gender", (req, res) => {
 
   if (language === "spanish") {
     gather.say(
-      { voice: "alice", language: "es-MX" },
+      { voice: "Polly.Mia", language: "es-MX" },
       "Elija su preferencia de voz. Presione 1 para voz femenina. Presione 2 para voz masculina."
     );
   } else {
     gather.say(
-      { voice: "alice", language: "en-US" },
+      { voice:  "Polly.Kendra", language: "en-US" },
       "Choose your voice preference. Press 1 for a female voice. Press 2 for a male voice."
     );
   }
