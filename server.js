@@ -518,7 +518,7 @@ app.post("/twilio/voice", (req, res) => {
 
   gather.say(
     { voice: "alice", language: "en-US" },
-    "Welcome to LyvvOut. Press 1 for English. Press 2 for Spanish."
+    "Welcome to LyvvOut,  a confidential, judgment-free hotline. I'm your intake guide. This call is completely private. Nothing is recorded. I am going to collect a few quick details to get your session started. Press 1 for English. Press 2 for Spanish."
   );
 
   response.redirect("/twilio/voice");
@@ -631,11 +631,14 @@ app.post("/twilio/collect-phone", async (req, res) => {
   pendingCallerNames.set(phone, payment.callerName || "Caller");
 
   try {
-    await twilioClient.messages.create({
-      to: phone,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      body: "LyvvOut: Here is your secure payment link for your 15-minute session: https://lyvvout.com/#payment. Use promo code LYVV50 if available."
-    });
+  await twilioClient.messages.create({
+  to: phone,
+  from: process.env.TWILIO_PHONE_NUMBER,
+  body:
+    payment.language === "spanish"
+      ? "LyvvOut: Aquí está su enlace seguro de pago para su sesión de 15 minutos de LyvvOut: https://lyvvout.com/#payment. Responda STOP para cancelar mensajes. Responda HELP para ayuda. Pueden aplicarse tarifas de mensajes y datos."
+      : "LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply."
+});
 
     response.say(
       { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
@@ -702,6 +705,113 @@ app.post("/twilio/wait-for-payment", (req, res) => {
     response.pause({ length: 10 });
     response.redirect("/twilio/wait-for-payment");
   }
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/collect-session-type", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From);
+
+  const payment =
+    payments.get(callSid) ||
+    payments.get(from) ||
+    [...payments.values()].find((p) => {
+      return (
+        p &&
+        p.paid === true &&
+        (
+          p.callId === callSid ||
+          p.twilioCallSid === callSid ||
+          normalizePhone(p.customerPhone) === from ||
+          normalizePhone(p.phone) === from
+        )
+      );
+    });
+
+  const language = payment?.language || "english";
+
+  const gather = response.gather({
+    numDigits: 1,
+    action: "/twilio/collect-voice-gender",
+    method: "POST",
+    timeout: 10
+  });
+
+  if (language === "spanish") {
+    gather.say(
+      { voice: "alice", language: "es-MX" },
+      "Elija su tipo de sesión. Presione 1 para Solo Escuchar. Presione 2 para Reaccionar Conmigo. Presione 3 para Sesión de Ánimo. Presione 4 para Hablar Claro. Presione 5 para Sin Filtro."
+    );
+  } else {
+    gather.say(
+      { voice: "alice", language: "en-US" },
+      "Choose your session type. Press 1 for Just Listen. Press 2 for React With Me. Press 3 for Hype Session. Press 4 for Keep It Real. Press 5 for No Filter."
+    );
+  }
+
+  response.redirect("/twilio/collect-session-type");
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/collect-voice-gender", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From);
+  const digit = req.body.Digits;
+
+  const sessionTypes = {
+    "1": "just_listen",
+    "2": "react_with_me",
+    "3": "hype_session",
+    "4": "keep_it_real",
+    "5": "no_filter"
+  };
+
+  const sessionType = sessionTypes[digit] || "hype_session";
+
+  const payment =
+    payments.get(callSid) ||
+    payments.get(from) ||
+    findMostRecentActivePaidPayment();
+
+  if (payment) {
+    payment.sessionType = sessionType;
+    payment.updatedAt = new Date().toISOString();
+    payments.set(callSid, payment);
+    if (from) payments.set(from, payment);
+  }
+
+  const language = payment?.language || "english";
+
+  const gather = response.gather({
+    numDigits: 1,
+    action: "/twilio/start-elevenlabs",
+    method: "POST",
+    timeout: 10
+  });
+
+  if (language === "spanish") {
+    gather.say(
+      { voice: "alice", language: "es-MX" },
+      "Elija su preferencia de voz. Presione 1 para voz femenina. Presione 2 para voz masculina."
+    );
+  } else {
+    gather.say(
+      { voice: "alice", language: "en-US" },
+      "Choose your voice preference. Press 1 for a female voice. Press 2 for a male voice."
+    );
+  }
+
+  response.redirect("/twilio/collect-voice-gender");
 
   res.type("text/xml");
   res.send(response.toString());
