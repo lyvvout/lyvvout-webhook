@@ -670,22 +670,40 @@ app.post("/twilio/wait-for-payment", (req, res) => {
   const callSid = req.body.CallSid;
   const from = normalizePhone(req.body.From);
 
+  const allPayments = [...new Set([...payments.values()])];
+
   const payment =
-    payments.get(callSid) ||
+    allPayments.find((p) =>
+      p &&
+      p.paid === true &&
+      (
+        p.callId === callSid ||
+        p.twilioCallSid === callSid ||
+        normalizePhone(p.customerPhone) === from ||
+        normalizePhone(p.phone) === from ||
+        normalizePhone(p.callerPhone) === from
+      )
+    ) ||
     payments.get(from) ||
-    [...payments.values()].find((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        (
-          p.callId === callSid ||
-          normalizePhone(p.customerPhone) === from ||
-          normalizePhone(p.phone) === from
-        )
-      );
-    });
+    payments.get(callSid);
+
+  console.log("WAIT FOR PAYMENT CHECK:", {
+    callSid,
+    from,
+    found: !!payment,
+    paid: payment?.paid,
+    customerPhone: payment?.customerPhone,
+    phone: payment?.phone,
+    paymentCallId: payment?.callId
+  });
 
   if (payment?.paid === true) {
+    if (callSid) {
+      payment.twilioCallSid = callSid;
+      payments.set(callSid, payment);
+    }
+    if (from) payments.set(from, payment);
+
     response.say(
       { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
       payment.language === "spanish"
