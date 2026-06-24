@@ -505,6 +505,208 @@ app.post("/send-survey-sms", async (req, res) => {
   }
 });
 
+app.post("/twilio/voice", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const gather = response.gather({
+    numDigits: 1,
+    action: "/twilio/collect-language",
+    method: "POST",
+    timeout: 10
+  });
+
+  gather.say(
+    { voice: "alice", language: "en-US" },
+    "Welcome to LyvvOut. Press 1 for English. Press 2 for Spanish."
+  );
+
+  response.redirect("/twilio/voice");
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/collect-language", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const digit = req.body.Digits;
+  const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From);
+
+  const language = digit === "2" ? "spanish" : "english";
+
+  const paymentRecord = {
+    callId: callSid,
+    twilioCallSid: callSid,
+    callerPhone: from,
+    language,
+    paid: false,
+    sessionComplete: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  payments.set(callSid, paymentRecord);
+  if (from) payments.set(from, paymentRecord);
+
+  const gather = response.gather({
+    input: "speech",
+    action: "/twilio/collect-name",
+    method: "POST",
+    timeout: 6,
+    speechTimeout: "auto"
+  });
+
+  if (language === "spanish") {
+    gather.say(
+      { voice: "alice", language: "es-MX" },
+      "Por favor, diga su nombre después del tono."
+    );
+  } else {
+    gather.say(
+      { voice: "alice", language: "en-US" },
+      "Please say your name after the tone."
+    );
+  }
+
+  response.redirect("/twilio/collect-language");
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/collect-name", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const callerName = req.body.SpeechResult || "Caller";
+
+  const payment = payments.get(callSid) || {};
+  payment.callerName = callerName;
+  payment.customerName = callerName;
+  payment.updatedAt = new Date().toISOString();
+
+  payments.set(callSid, payment);
+
+  const gather = response.gather({
+    input: "dtmf",
+    action: "/twilio/collect-phone",
+    method: "POST",
+    timeout: 15,
+    finishOnKey: "#"
+  });
+
+  gather.say(
+    { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+    payment.language === "spanish"
+      ? "Ahora ingrese su número de teléfono de diez dígitos, luego presione la tecla numeral."
+      : "Now enter your ten digit phone number, then press the pound key."
+  );
+
+  response.redirect("/twilio/collect-name");
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/collect-phone", async (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const digits = req.body.Digits;
+  const phone = normalizePhone(digits);
+
+  const payment = payments.get(callSid) || {};
+  payment.customerPhone = phone;
+  payment.phone = phone;
+  payment.updatedAt = new Date().toISOString();
+
+  payments.set(callSid, payment);
+  payments.set(phone, payment);
+
+  pendingCallerNames.set(phone, payment.callerName || "Caller");
+
+  try {
+    await twilioClient.messages.create({
+      to: phone,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      body: "LyvvOut: Here is your secure payment link for your 15-minute session: https://lyvvout.com/#payment. Use promo code LYVV50 if available."
+    });
+
+    response.say(
+      { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+      payment.language === "spanish"
+        ? "Le enviamos el enlace de pago por mensaje de texto. Complete el pago para continuar."
+        : "We just texted your secure payment link. Please complete payment to continue."
+    );
+
+    response.redirect("/twilio/wait-for-payment");
+  } catch (error) {
+    console.error("TWILIO PAYMENT SMS ERROR:", error.message);
+
+    response.say(
+      { voice: "alice", language: "en-US" },
+      "We could not send the payment text. Please try again later."
+    );
+
+    response.hangup();
+  }
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
+app.post("/twilio/wait-for-payment", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From);
+
+  const payment =
+    payments.get(callSid) ||
+    payments.get(from) ||
+    [...payments.values()].find((p) => {
+      return (
+        p &&
+        p.paid === true &&
+        (
+          p.callId === callSid ||
+          normalizePhone(p.customerPhone) === from ||
+          normalizePhone(p.phone) === from
+        )
+      );
+    });
+
+  if (payment?.paid === true) {
+    response.say(
+      { voice: "alice", language: payment.language === "spanish" ? "es-MX" : "en-US" },
+      payment.language === "spanish"
+        ? "Pago confirmado. Continuemos."
+        : "Payment confirmed. Let's continue."
+    );
+
+    response.redirect("/twilio/collect-session-type");
+  } else {
+    response.say(
+      { voice: "alice", language: payment?.language === "spanish" ? "es-MX" : "en-US" },
+      payment?.language === "spanish"
+        ? "Aún estamos esperando la confirmación del pago. Permanezca en la línea."
+        : "We are still waiting for payment confirmation. Please stay on the line."
+    );
+
+    response.pause({ length: 10 });
+    response.redirect("/twilio/wait-for-payment");
+  }
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
 app.listen(PORT, () => {
   console.log(`LyvvOut webhook server running on port ${PORT}`);
 });
