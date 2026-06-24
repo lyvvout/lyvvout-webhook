@@ -871,6 +871,99 @@ app.post("/twilio/collect-voice-gender", (req, res) => {
   res.send(response.toString());
 });
 
+app.post("/twilio/start-elevenlabs", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+
+  const callSid = req.body.CallSid;
+  const from = normalizePhone(req.body.From);
+  const digit = req.body.Digits;
+
+  const voiceGender = digit === "2" ? "male" : "female";
+
+  const payment =
+    payments.get(callSid) ||
+    payments.get(from) ||
+    findMostRecentActivePaidPayment();
+
+  if (!payment) {
+    console.log("START ELEVENLABS FAILED - NO PAYMENT FOUND", {
+      callSid,
+      from,
+      digit
+    });
+
+    response.say(
+      { voice: "Polly.Kendra", language: "en-US" },
+      "We could not find your paid session. Please call back or contact LyvvOut support."
+    );
+    response.hangup();
+
+    res.type("text/xml");
+    return res.send(response.toString());
+  }
+
+  payment.voiceGender = voiceGender;
+  payment.updatedAt = new Date().toISOString();
+
+  const language = payment.language || "english";
+
+  let agentId;
+
+  if (language === "spanish" && voiceGender === "female") {
+    agentId = process.env.ELEVENLABS_AGENT_ES_FEMALE;
+  } else if (language === "spanish" && voiceGender === "male") {
+    agentId = process.env.ELEVENLABS_AGENT_ES_MALE;
+  } else if (language === "english" && voiceGender === "female") {
+    agentId = process.env.ELEVENLABS_AGENT_EN_FEMALE;
+  } else {
+    agentId = process.env.ELEVENLABS_AGENT_EN_MALE;
+  }
+
+  payment.elevenLabsAgentId = agentId;
+  payments.set(callSid, payment);
+  if (from) payments.set(from, payment);
+  if (payment.customerPhone) payments.set(payment.customerPhone, payment);
+
+  console.log("START ELEVENLABS SELECTED:", {
+    callSid,
+    from,
+    language,
+    voiceGender,
+    sessionType: payment.sessionType,
+    agentId,
+    callerName: payment.callerName,
+    customerPhone: payment.customerPhone
+  });
+
+  response.say(
+    {
+      voice: language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+      language: language === "spanish" ? "es-MX" : "en-US"
+    },
+    language === "spanish"
+      ? "Perfecto. Vamos a comenzar su sesión ahora."
+      : "Perfect. We are starting your session now."
+  );
+
+  response.pause({ length: 1 });
+
+  response.say(
+    {
+      voice: language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
+      language: language === "spanish" ? "es-MX" : "en-US"
+    },
+    language === "spanish"
+      ? "La conexión con el agente de voz de ElevenLabs será el siguiente paso."
+      : "The ElevenLabs voice connection will be the next step."
+  );
+
+  response.hangup();
+
+  res.type("text/xml");
+  res.send(response.toString());
+});
+
 app.listen(PORT, () => {
   console.log(`LyvvOut webhook server running on port ${PORT}`);
 });
