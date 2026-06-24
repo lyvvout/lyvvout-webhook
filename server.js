@@ -109,7 +109,7 @@ function findMostRecentActivePaidPayment() {
   return activePayments[0] || null;
 }
 
-function findPaymentForBlandTimer(req) {
+function findPaymentForAISession(req) {
   const rawPhone =
     req.body.phone_number ||
     req.body.phone ||
@@ -121,7 +121,7 @@ function findPaymentForBlandTimer(req) {
   const rawCallId =
     req.body.call_id ||
     req.body.callId ||
-    req.body.bland_call_id ||
+    req.body.ai_call_id ||
     "";
 
   const phone = isTemplateValue(rawPhone) ? "" : normalizePhone(rawPhone);
@@ -139,8 +139,7 @@ function findPaymentForBlandTimer(req) {
           normalizePhone(p.phone) === phone ||
           normalizePhone(p.callerPhone) === phone ||
           p.callId === callId ||
-          p.blandCallId === callId ||
-          p.fallbackBlandCallId === callId
+          p.aiCallId === callId 
         )
       );
     });
@@ -302,179 +301,13 @@ app.get("/", (req, res) => {
     status: "LyvvOut webhook server running",
     health: "/health",
     stripeWebhook: "/stripe-webhook",
-    blandCheckPayment: "/bland/check-payment",
+    aiSessionStatus: "/elevenlabs/session-status",
   });
 });
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
-
-function findPaymentForFlexStart({ sessionId, liveCallSid }) {
-  const allPayments =
-    payments instanceof Map ? Array.from(payments.values()) : payments;
-
-  return allPayments.find(payment => {
-    const sessionMatches =
-      sessionId && payment.sessionId === sessionId;
-
-    const callMatches =
-      liveCallSid && payment.liveCallSid === liveCallSid;
-
-    return sessionMatches || callMatches;
-  });
-
-}
-
-function getLiveRemainingSeconds(payment) {
-  if (!payment) return 0;
-
-  if (!payment.timerStarted || !payment.liveSessionEndsAt) {
-    return payment.totalSessionSeconds || 0;
-  }
-
-  const endsAt = new Date(payment.liveSessionEndsAt).getTime();
-  const now = Date.now();
-
-  return Math.max(0, Math.ceil((endsAt - now) / 1000));
-}
-
-function scheduleLiveSessionEndOnly(payment) {
-  if (!payment) return;
-  if (!payment.timerStarted) return;
-  if (!payment.liveSessionEndsAt) return;
-  if (payment.sessionComplete === true) return;
-  if (!payment.liveCallSid) return;
-
-  const now = Date.now();
-  const endAt = new Date(payment.liveSessionEndsAt).getTime();
-  const delay = endAt - now;
-
-  if (delay <= 0) {
-    endLiveSessionCall(payment.liveCallSid, "paid_time_expired");
-    return;
-  }
-
-  console.log("LIVE SESSION END TIMER SCHEDULED:", {
-    sessionId: payment.sessionId,
-    liveCallSid: payment.liveCallSid,
-    endInSeconds: Math.ceil(delay / 1000),
-    liveSessionEndsAt: payment.liveSessionEndsAt
-  });
-
-  setTimeout(() => {
-    endLiveSessionCall(payment.liveCallSid, "paid_time_expired");
-  }, delay);
-}
-
-async function endLiveSessionCall(identifier, reason) {
-  const payment =
-    payments.get(identifier) ||
-    [...payments.values()].find(p =>
-      p.callId === identifier ||
-      p.customerPhone === identifier ||
-      p.phone === identifier ||
-      p.callerPhone === identifier ||
-      p.liveCallSid === identifier ||
-      p.sessionId === identifier ||
-      p.activeSessionId === identifier
-    );
-
-  if (!payment) {
-    console.log("END LIVE SESSION: NO PAYMENT FOUND", { identifier, reason });
-    return;
-  }
-
-  if (payment.sessionComplete === true) {
-    console.log("END LIVE SESSION: ALREADY COMPLETE", {
-      sessionId: payment.sessionId,
-      liveCallSid: payment.liveCallSid
-    });
-    return;
-  }
-
-  payment.sessionComplete = true;
-  payment.liveSessionActive = false;
-  payment.currentPrompt = "SESSION COMPLETE";
-  payment.currentPromptScript = "The paid session time has ended.";
-  payment.completedReason = reason;
-  payment.completedAt = new Date().toISOString();
-  payment.updatedAt = new Date().toISOString();
-
-  console.log("LIVE SESSION ENDING:", {
-    sessionId: payment.sessionId,
-    liveCallSid: payment.liveCallSid,
-    reason
-  });
-
-  if (!payment.liveCallSid) {
-    console.log("No liveCallSid found. Cannot end Twilio call.");
-    return;
-  }
-
-  try {
-    await twilioClient.calls(payment.liveCallSid).update({
-      status: "completed"
-    });
-
-    console.log("TWILIO LIVE CALL ENDED:", {
-      sessionId: payment.sessionId,
-      liveCallSid: payment.liveCallSid,
-      reason
-    });
-
-    try {
-  await sendLiveListenerSurveySms(payment);
-} catch (smsError) {
-  console.error("LIVE LISTENER SURVEY SMS ERROR:", smsError);
-}
-
-  } catch (error) {
-    console.error("FAILED TO END TWILIO LIVE CALL:", error.message);
-  }
-}
-async function sendLiveListenerSurveySms(payment) {
-  const to =
-    payment.customerPhone ||
-    payment.phone ||
-    payment.callerPhone ||
-    payment.caller_phone;
-
-  if (!to) {
-    console.warn("LIVE SURVEY SMS SKIPPED - NO CUSTOMER PHONE", payment);
-    return { success: false, error: "Missing customer phone" };
-  }
-
-  if (payment.liveSurveySmsSent === true) {
-    console.log("LIVE SURVEY SMS SKIPPED - ALREADY SENT", { to });
-    return { success: true, already_sent: true };
-  }
-
-  const from =
-    process.env.TWILIO_LIVE_LISTENER_NUMBER ||
-    process.env.TWILIO_PHONE_NUMBER;
-
-  const message =
-    "LyvvOut: Thank you for sharing this space with us. Please take 20 seconds to share your experience: https://lyvvout.com/#survey";
-
-  const sms = await twilioClient.messages.create({
-    to,
-    from,
-    body: message
-  });
-
-  payment.liveSurveySmsSent = true;
-  payment.liveSurveySmsSid = sms.sid;
-  payment.liveSurveySmsSentAt = new Date().toISOString();
-
-  console.log("LIVE LISTENER SURVEY SMS SENT:", {
-    to,
-    from,
-    sid: sms.sid
-  });
-
-  return { success: true, sid: sms.sid };
-}
 
 app.post("/send-payment-sms", async (req, res) => {
   try {
@@ -557,12 +390,10 @@ app.post("/send-survey-sms", async (req, res) => {
     const phone = normalizePhone(rawPhone);
 
     const callId = pickRealValue(
-      req.body.call_id,
-      req.body.callId,
-      req.body.bland_call_id,
-      req.body.fallback_bland_call_id,
-      req.body.live_call_sid
-    );
+  req.body.call_id,
+  req.body.callId,
+  req.body.ai_call_id
+);
 
     let payment =
       (phone && payments.get(phone)) ||
@@ -576,9 +407,7 @@ app.post("/send-survey-sms", async (req, res) => {
             normalizePhone(p.phone) === phone ||
             normalizePhone(p.callerPhone) === phone ||
             p.callId === callId ||
-            p.blandCallId === callId ||
-            p.fallbackBlandCallId === callId ||
-            p.liveCallSid === callId ||
+            p.aiCallId === callId ||
             p.fallbackTwilioCallSid === callId
           )
         );
