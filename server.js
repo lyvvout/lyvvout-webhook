@@ -744,14 +744,14 @@ app.post("/twilio/collect-session-type", (req, res) => {
 
   if (language === "spanish") {
     gather.say(
-      { voice: "alice", language: "es-MX" },
-      "Elija su tipo de sesión. Presione 1 para Solo Escuchar. Presione 2 para Reaccionar Conmigo. Presione 3 para Sesión de Ánimo. Presione 4 para Hablar Claro. Presione 5 para Sin Filtro."
-    );
+  { voice: "alice", language: "es-MX" },
+  "Ahora elija el tono de su sesión. Presione 1 para Solo Escuchar: silencio, presencia, sin consejos. Presione 2 para Reaccionar Conmigo: validación y reacciones reales. Presione 3 para Sesión de Ánimo: apoyo, motivación y energía positiva. Presione 4 para Hablar Claro: honesto, firme y directo. Presione 5 para Sin Filtro: crudo, expresivo y sin juicio."
+);
   } else {
     gather.say(
-      { voice: "alice", language: "en-US" },
-      "Choose your session type. Press 1 for Just Listen. Press 2 for React With Me. Press 3 for Hype Session. Press 4 for Keep It Real. Press 5 for No Filter."
-    );
+  { voice: "alice", language: "en-US" },
+  "Now let’s set the tone for your session. Press 1 for Just Listen: quiet, present, no advice. Press 2 for React With Me: validation and real reactions. Press 3 for Hype Session: uplifting and fully in your corner. Press 4 for Keep It Real: honest, grounded, and direct. Press 5 for No Filter: raw, expressive, zero judgment."
+);
   }
 
   response.redirect("/twilio/collect-session-type");
