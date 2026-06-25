@@ -944,6 +944,85 @@ app.post("/twilio/wait-for-payment", (req, res) => {
   res.send(response.toString());
 });
 
+app.post("/elevenlabs/check-payment", (req, res) => {
+  try {
+    console.log("ELEVENLABS CHECK PAYMENT REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        paid: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const allPayments = [...new Set([...payments.values()])];
+
+    const payment =
+      allPayments.find((p) =>
+        p &&
+        (
+          normalizePhone(p.customerPhone) === phone ||
+          normalizePhone(p.phone) === phone ||
+          normalizePhone(p.callerPhone) === phone
+        )
+      ) ||
+      payments.get(phone);
+
+    console.log("ELEVENLABS CHECK PAYMENT RESULT:", {
+      phone,
+      found: !!payment,
+      paid: payment?.paid,
+      customerPhone: payment?.customerPhone,
+      paymentCallId: payment?.callId
+    });
+
+    if (payment?.paid === true) {
+      return res.json({
+        ok: true,
+        paid: true,
+        phone,
+        callerName: payment.callerName || payment.customerName || "Caller",
+        language: payment.language || "english",
+        sessionLength: payment.plan?.sessionLength || payment.sessionLength || "15",
+        sessionSeconds: payment.sessionSeconds || 900,
+        message:
+          payment.language === "spanish"
+            ? "Pago confirmado."
+            : "Payment confirmed."
+      });
+    }
+
+    return res.json({
+      ok: true,
+      paid: false,
+      phone,
+      message:
+        payment?.language === "spanish"
+          ? "Aún estamos esperando la confirmación del pago."
+          : "We are still waiting for payment confirmation."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS CHECK PAYMENT ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      paid: false,
+      error: "Failed to check payment.",
+      details: error.message
+    });
+  }
+});
+
 app.post("/twilio/collect-session-type", (req, res) => {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
