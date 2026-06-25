@@ -320,6 +320,88 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/elevenlabs/save-intake-info", (req, res) => {
+  try {
+    console.log("ELEVENLABS SAVE INTAKE INFO REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    const callerName =
+      String(
+        req.body.callerName ||
+        req.body.customerName ||
+        req.body.name ||
+        "Caller"
+      ).trim();
+
+    const language =
+      String(req.body.language || "english").toLowerCase().includes("spanish")
+        ? "spanish"
+        : "english";
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const intakeId = `elevenlabs_${phone}_${Date.now()}`;
+
+    const paymentRecord = {
+      callId: intakeId,
+      source: "elevenlabs_intake",
+      paid: false,
+      language,
+      callerName,
+      customerName: callerName,
+      displayName: callerName,
+      customerPhone: phone,
+      phone,
+      sessionComplete: false,
+      timerStarted: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    payments.set(intakeId, paymentRecord);
+    payments.set(phone, paymentRecord);
+
+    pendingCallerNames.set(phone, callerName);
+
+    console.log("ELEVENLABS INTAKE SAVED:", {
+      intakeId,
+      phone,
+      callerName,
+      language
+    });
+
+    return res.json({
+      ok: true,
+      intakeId,
+      phone,
+      callerName,
+      language,
+      message: `Caller info saved for ${callerName}.`
+    });
+  } catch (error) {
+    console.error("ELEVENLABS SAVE INTAKE INFO ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to save intake info.",
+      details: error.message
+    });
+  }
+});
+
 app.post("/send-payment-sms", async (req, res) => {
   try {
     console.log("PAYMENT SMS REQUEST:", req.body);
