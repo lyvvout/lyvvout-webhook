@@ -3,6 +3,9 @@ const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
 
+// Twilio is kept ONLY as the SMS sender (payment link + survey link).
+// The old Twilio voice IVR intake has been removed. ElevenLabs now handles
+// the spoken intake. Twilio remains the phone carrier only.
 const twilio = require('twilio');
 
 const twilioClient = twilio(
@@ -18,6 +21,8 @@ const PORT = process.env.PORT || 3000;
 
 // Temporary in-memory store.
 // Fine for testing. Later use Redis, Supabase, Firebase, or a database.
+// WARNING: a Render restart or redeploy erases everything here, which kills
+// any call that is mid-session. Move this to a database before real launch.
 const payments = new Map();
 const pendingCallerNames = new Map();
 
@@ -40,7 +45,8 @@ function formatPhoneForSpeech(phone) {
   return `${last10.slice(0, 3)}-${last10.slice(3, 6)}-${last10.slice(6)}`;
 }
 
-function formatSessionTypeForAirtable(value) {
+// Human-readable label for a session type code.
+function formatSessionTypeLabel(value) {
   const normalized = String(value || "").toLowerCase().trim();
 
   const labels = {
@@ -61,6 +67,115 @@ function isTemplateValue(value) {
   return text.includes("{{") || text.includes("}}");
 }
 
+// Accept the exact session type codes, plus a few defensive variants
+// (digits 1-5, spaces instead of underscores). Returns "" if unrecognized.
+function normalizeSessionType(value) {
+  const raw = String(value || "").toLowerCase().trim().replace(/\s+/g, "_");
+
+  const digitMap = {
+    "1": "just_listen",
+    "2": "react_with_me",
+    "3": "hype_session",
+    "4": "keep_it_real",
+    "5": "no_filter"
+  };
+
+  if (digitMap[raw]) return digitMap[raw];
+
+  const valid = [
+    "just_listen",
+    "react_with_me",
+    "hype_session",
+    "keep_it_real",
+    "no_filter"
+  ];
+
+  return valid.includes(raw) ? raw : "";
+}
+
+// Accept female/male plus defensive variants. Returns "" if unrecognized.
+function normalizeVoiceGender(value) {
+  const raw = String(value || "").toLowerCase().trim();
+
+  if (["1", "female", "f", "woman", "femenina", "mujer"].includes(raw)) {
+    return "female";
+  }
+
+  if (["2", "male", "m", "man", "masculina", "hombre"].includes(raw)) {
+    return "male";
+  }
+
+  return "";
+}
+
+// Return every distinct caller record that matches this phone, by any phone
+// field OR by direct key. This is what lets us survive the fact that intake
+// and the Stripe webhook can create two separate records for one caller.
+function getAllCallerRecords(phone) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return [];
+
+  const all = [...new Set([...payments.values()])].filter((p) => {
+    return (
+      p &&
+      (
+        normalizePhone(p.customerPhone) === normalized ||
+        normalizePhone(p.phone) === normalized ||
+        normalizePhone(p.callerPhone) === normalized
+      )
+    );
+  });
+
+  const direct = payments.get(normalized);
+  if (direct && !all.includes(direct)) all.push(direct);
+
+  return all;
+}
+
+// First non-empty value of a field across a set of records.
+function pickFirstDefined(records, field) {
+  for (const r of records) {
+    if (r && r[field] !== undefined && r[field] !== null && r[field] !== "") {
+      return r[field];
+    }
+  }
+  return undefined;
+}
+
+// The confirmed-paid record for a caller, most recent first.
+function findPaidCallerRecord(phone) {
+  const records = getAllCallerRecords(phone);
+
+  const paid = records
+    .filter((p) => p.paid === true)
+    .sort((a, b) => {
+      const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
+      const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+  return paid[0] || null;
+}
+
+// Write the same updates onto EVERY record that matches this phone, so intake
+// and paid records stay in sync no matter which one a later tool resolves.
+function applyToAllCallerRecords(phone, updates) {
+  const records = getAllCallerRecords(phone);
+  const now = new Date().toISOString();
+
+  records.forEach((rec) => {
+    Object.assign(rec, updates, { updatedAt: now });
+  });
+
+  const normalized = normalizePhone(phone);
+  if (normalized && records.length > 0) {
+    const paid = records.find((r) => r.paid === true);
+    payments.set(normalized, paid || records[0]);
+  }
+
+  return records;
+}
+
 function findMostRecentFallbackPayment() {
   const fallbackPayments = [...payments.values()]
     .filter((p) => {
@@ -70,7 +185,6 @@ function findMostRecentFallbackPayment() {
         p.sessionComplete !== true &&
         (
           p.fallbackRequested === true ||
-          p.source === "twilio_queue_fallback" ||
           p.fallbackEntryHitAt ||
           p.queueFallbackTriggeredAt
         )
@@ -120,54 +234,6 @@ function findMostRecentActivePaidPayment() {
   return activePayments[0] || null;
 }
 
-function findPaymentForAISession(req) {
-  const rawPhone =
-    req.body.phone_number ||
-    req.body.phone ||
-    req.body.from ||
-    req.body.callerPhone ||
-    req.body.customerPhone ||
-    "";
-
-  const rawCallId =
-    req.body.call_id ||
-    req.body.callId ||
-    req.body.ai_call_id ||
-    "";
-
-  const phone = isTemplateValue(rawPhone) ? "" : normalizePhone(rawPhone);
-  const callId = isTemplateValue(rawCallId) ? "" : String(rawCallId || "");
-
-  let payment =
-    (phone && payments.get(phone)) ||
-    (callId && payments.get(callId)) ||
-    [...payments.values()].find((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          normalizePhone(p.phone) === phone ||
-          normalizePhone(p.callerPhone) === phone ||
-          p.callId === callId ||
-          p.aiCallId === callId 
-        )
-      );
-    });
-
-  if (!payment && isTemplateValue(rawPhone)) {
-    payment = findMostRecentFallbackPayment();
-  }
-
-  return {
-    payment,
-    phone,
-    callId,
-    rawPhone,
-    rawCallId
-  };
-}
-
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
@@ -215,7 +281,6 @@ app.post(
         session.customer_details?.phone ||
         session.id;
 
-      const paymentLink = session.payment_link;
       const paymentLinkUrl = session.metadata?.payment_link_url;
 
       let matchedPlan = null;
@@ -238,70 +303,95 @@ app.post(
       if (!matchedPlan) {
         const amount = session.amount_total;
 
-        if (amount === 1499) matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
+        if (amount === 1499) {
+          matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
+        }
       }
 
       const now = new Date();
 
-const sessionSeconds =
-  matchedPlan?.seconds ||
-  Number(session.metadata?.seconds) ||
-  900;
+      const sessionSeconds =
+        matchedPlan?.seconds ||
+        Number(session.metadata?.seconds) ||
+        900;
 
-const paymentRecord = {
-  paid: true,
-  callId,
-  stripeSessionId: session.id,
-  customerPhone: session.customer_details?.phone || null,
-  customerEmail: session.customer_details?.email || null,
-  amountTotal: session.amount_total,
-  currency: session.currency,
-  paymentStatus: session.payment_status,
-  plan: matchedPlan,
-  paidAt: now.toISOString(),
+      const paymentRecord = {
+        paid: true,
+        callId,
+        stripeSessionId: session.id,
+        customerPhone: session.customer_details?.phone || null,
+        customerEmail: session.customer_details?.email || null,
+        amountTotal: session.amount_total,
+        currency: session.currency,
+        paymentStatus: session.payment_status,
+        plan: matchedPlan,
+        paidAt: now.toISOString(),
 
-// SESSION TIMER FIELDS
-sessionStartedAt: null,
-timerStarted: false,
-sessionSeconds,
-totalSessionSeconds: sessionSeconds,
+        // SESSION TIMER FIELDS
+        sessionStartedAt: null,
+        timerStarted: false,
+        sessionSeconds,
+        totalSessionSeconds: sessionSeconds,
 
-twoMinuteWarningSent: false,
-surveySmsSent: false,
-sessionComplete: false,
-};
+        twoMinuteWarningSent: false,
+        surveySmsSent: false,
+        sessionComplete: false,
+      };
 
-payments.set(callId, paymentRecord);
+      // Carry over anything the ElevenLabs intake captured before payment
+      // (language, caller name) so the paid record is complete. The agent
+      // selection later depends on language being present.
+      const intakePhone = normalizePhone(paymentRecord.customerPhone || callId);
+      const intakeRecords = getAllCallerRecords(intakePhone);
+      const intakeRecord =
+        intakeRecords.find((p) => p && p.source === "elevenlabs_intake") ||
+        intakeRecords[0];
 
-if (paymentRecord.customerPhone) {
-  payments.set(paymentRecord.customerPhone, paymentRecord);
-}
+      if (intakeRecord) {
+        if (!paymentRecord.language && intakeRecord.language) {
+          paymentRecord.language = intakeRecord.language;
+        }
+        if (!paymentRecord.callerName && intakeRecord.callerName) {
+          paymentRecord.callerName = intakeRecord.callerName;
+          paymentRecord.customerName = intakeRecord.callerName;
+          paymentRecord.displayName = intakeRecord.callerName;
+        }
+        if (!paymentRecord.voiceGender && intakeRecord.voiceGender) {
+          paymentRecord.voiceGender = intakeRecord.voiceGender;
+        }
+        if (!paymentRecord.sessionType && intakeRecord.sessionType) {
+          paymentRecord.sessionType = intakeRecord.sessionType;
+        }
+      }
 
-if (paymentRecord.callId) {
-  payments.set(paymentRecord.callId, paymentRecord);
-}
+      payments.set(callId, paymentRecord);
 
-const pendingName =
-  pendingCallerNames.get(paymentRecord.customerPhone) ||
-  pendingCallerNames.get(callId) ||
-  pendingCallerNames.get(normalizePhone(callId));
+      if (paymentRecord.customerPhone) {
+        payments.set(normalizePhone(paymentRecord.customerPhone), paymentRecord);
+      }
 
-if (pendingName) {
-  paymentRecord.callerName = pendingName;
-  paymentRecord.customerName = pendingName;
-  paymentRecord.displayName = pendingName;
+      const pendingName =
+        pendingCallerNames.get(normalizePhone(paymentRecord.customerPhone)) ||
+        pendingCallerNames.get(callId) ||
+        pendingCallerNames.get(normalizePhone(callId));
 
-  console.log("PENDING CALLER NAME ATTACHED TO PAYMENT:", {
-    phone: paymentRecord.customerPhone,
-    callerName: pendingName
-  });
-}
+      if (pendingName && !paymentRecord.callerName) {
+        paymentRecord.callerName = pendingName;
+        paymentRecord.customerName = pendingName;
+        paymentRecord.displayName = pendingName;
 
-console.log("Payment confirmed:", paymentRecord);
+        console.log("PENDING CALLER NAME ATTACHED TO PAYMENT:", {
+          phone: paymentRecord.customerPhone,
+          callerName: pendingName
+        });
+      }
 
-res.json({ received: true });
-}
-});
+      console.log("Payment confirmed:", paymentRecord);
+    }
+
+    res.json({ received: true });
+  }
+);
 
 // JSON routes after Stripe raw webhook
 app.use(express.json());
@@ -312,7 +402,17 @@ app.get("/", (req, res) => {
     status: "LyvvOut webhook server running",
     health: "/health",
     stripeWebhook: "/stripe-webhook",
-    aiSessionStatus: "/elevenlabs/session-status",
+    intake: "/elevenlabs/save-intake-info",
+    checkPayment: "/elevenlabs/check-payment",
+    saveSessionType: "/elevenlabs/save-session-type",
+    saveVoicePreference: "/elevenlabs/save-voice-preference",
+    startPaidSession: "/elevenlabs/start-paid-session",
+    startSessionTimer: "/elevenlabs/start-session-timer",
+    checkSessionTime: "/elevenlabs/check-session-time",
+    sendTwoMinuteWarning: "/elevenlabs/send-two-minute-warning",
+    endSession: "/elevenlabs/end-session",
+    sendPaymentSms: "/send-payment-sms",
+    sendSurveySms: "/send-survey-sms"
   });
 });
 
@@ -320,6 +420,34 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
+// Temporary diagnostic. Reports which required env vars are SET (true/false),
+// never their values, so nothing secret is exposed. Safe to delete after launch.
+app.get("/env-check", (req, res) => {
+  const isSet = (name) => !!process.env[name];
+  res.json({
+    twilio: {
+      TWILIO_ACCOUNT_SID: isSet("TWILIO_ACCOUNT_SID"),
+      TWILIO_AUTH_TOKEN: isSet("TWILIO_AUTH_TOKEN"),
+      TWILIO_PHONE_NUMBER: isSet("TWILIO_PHONE_NUMBER")
+    },
+    stripe: {
+      STRIPE_SECRET_KEY: isSet("STRIPE_SECRET_KEY"),
+      STRIPE_WEBHOOK_SECRET: isSet("STRIPE_WEBHOOK_SECRET")
+    },
+    elevenlabs_paid_agents: {
+      ELEVENLABS_AGENT_EN_FEMALE: isSet("ELEVENLABS_AGENT_EN_FEMALE"),
+      ELEVENLABS_AGENT_EN_MALE: isSet("ELEVENLABS_AGENT_EN_MALE"),
+      ELEVENLABS_AGENT_ES_FEMALE: isSet("ELEVENLABS_AGENT_ES_FEMALE"),
+      ELEVENLABS_AGENT_ES_MALE: isSet("ELEVENLABS_AGENT_ES_MALE")
+    }
+  });
+});
+
+// =====================================================================
+// PHASE 1 — INTAKE + PAYMENT
+// =====================================================================
+
+// 1. save_intake_info
 app.post("/elevenlabs/save-intake-info", (req, res) => {
   try {
     console.log("ELEVENLABS SAVE INTAKE INFO REQUEST:", req.body);
@@ -402,19 +530,20 @@ app.post("/elevenlabs/save-intake-info", (req, res) => {
   }
 });
 
+// 2. send_payment_sms
 app.post("/send-payment-sms", async (req, res) => {
   try {
     console.log("PAYMENT SMS REQUEST:", req.body);
 
-const rawPhone =
-  req.body.phone_number ||
-  req.body.phone ||
-  req.body.from ||
-  "";
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.from ||
+      "";
 
-const phone_number = normalizePhone(rawPhone);
+    const phone_number = normalizePhone(rawPhone);
 
-if (!phone_number) {
+    if (!phone_number) {
       return res.status(400).json({
         success: false,
         error: "Missing phone_number"
@@ -451,7 +580,641 @@ if (!phone_number) {
   }
 });
 
+// 3. check_payment
+app.post("/elevenlabs/check-payment", (req, res) => {
+  try {
+    console.log("ELEVENLABS CHECK PAYMENT REQUEST:", req.body);
 
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        paid: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const matches = getAllCallerRecords(phone);
+
+    // Prefer a confirmed-paid record. The intake record (paid:false) and the
+    // Stripe record (paid:true) can both exist for one phone, so we must not
+    // just grab the first match.
+    const payment =
+      matches.find((p) => p.paid === true) ||
+      payments.get(phone) ||
+      matches[0];
+
+    const language = pickFirstDefined(matches, "language") || "english";
+
+    console.log("ELEVENLABS CHECK PAYMENT RESULT:", {
+      phone,
+      found: !!payment,
+      paid: payment?.paid,
+      customerPhone: payment?.customerPhone,
+      paymentCallId: payment?.callId
+    });
+
+    if (payment?.paid === true) {
+      return res.json({
+        ok: true,
+        paid: true,
+        phone,
+        callerName: payment.callerName || payment.customerName || "Caller",
+        language,
+        sessionLength: payment.plan?.sessionLength || payment.sessionLength || "15",
+        sessionSeconds: payment.sessionSeconds || 900,
+        message:
+          language === "spanish"
+            ? "Pago confirmado."
+            : "Payment confirmed."
+      });
+    }
+
+    return res.json({
+      ok: true,
+      paid: false,
+      phone,
+      message:
+        language === "spanish"
+          ? "Aún estamos esperando la confirmación del pago."
+          : "We are still waiting for payment confirmation."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS CHECK PAYMENT ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      paid: false,
+      error: "Failed to check payment.",
+      details: error.message
+    });
+  }
+});
+
+// 4. save_session_type
+app.post("/elevenlabs/save-session-type", (req, res) => {
+  try {
+    console.log("ELEVENLABS SAVE SESSION TYPE REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    const sessionType = normalizeSessionType(
+      req.body.sessionType || req.body.session_type
+    );
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    if (!sessionType) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid or missing sessionType.",
+        accepted: [
+          "just_listen",
+          "react_with_me",
+          "hype_session",
+          "keep_it_real",
+          "no_filter"
+        ]
+      });
+    }
+
+    const records = applyToAllCallerRecords(phone, {
+      sessionType,
+      sessionTypeLabel: formatSessionTypeLabel(sessionType)
+    });
+
+    if (records.length === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: "No caller record found for this phone. Run save_intake_info first."
+      });
+    }
+
+    console.log("ELEVENLABS SESSION TYPE SAVED:", {
+      phone,
+      sessionType,
+      recordsUpdated: records.length
+    });
+
+    return res.json({
+      ok: true,
+      sessionType,
+      message: "Session type saved."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS SAVE SESSION TYPE ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to save session type.",
+      details: error.message
+    });
+  }
+});
+
+// 5. save_voice_preference
+app.post("/elevenlabs/save-voice-preference", (req, res) => {
+  try {
+    console.log("ELEVENLABS SAVE VOICE PREFERENCE REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    const voiceGender = normalizeVoiceGender(
+      req.body.voiceGender || req.body.voice_gender || req.body.voice
+    );
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    if (!voiceGender) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid or missing voiceGender.",
+        accepted: ["female", "male"]
+      });
+    }
+
+    const records = applyToAllCallerRecords(phone, { voiceGender });
+
+    if (records.length === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: "No caller record found for this phone. Run save_intake_info first."
+      });
+    }
+
+    console.log("ELEVENLABS VOICE PREFERENCE SAVED:", {
+      phone,
+      voiceGender,
+      recordsUpdated: records.length
+    });
+
+    return res.json({
+      ok: true,
+      voiceGender,
+      message: "Voice preference saved."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS SAVE VOICE PREFERENCE ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to save voice preference.",
+      details: error.message
+    });
+  }
+});
+
+// 6. start_paid_session
+app.post("/elevenlabs/start-paid-session", (req, res) => {
+  try {
+    console.log("ELEVENLABS START PAID SESSION REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const records = getAllCallerRecords(phone);
+
+    if (records.length === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: "No caller record found for this phone."
+      });
+    }
+
+    const paid = findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        message: "Payment not confirmed. Cannot start paid session."
+      });
+    }
+
+    const language = pickFirstDefined(records, "language") || "english";
+    const voiceGender = pickFirstDefined(records, "voiceGender") || "female";
+    const sessionType = pickFirstDefined(records, "sessionType") || "not_provided";
+
+    let agentId;
+
+    if (language === "spanish" && voiceGender === "female") {
+      agentId = process.env.ELEVENLABS_AGENT_ES_FEMALE;
+    } else if (language === "spanish" && voiceGender === "male") {
+      agentId = process.env.ELEVENLABS_AGENT_ES_MALE;
+    } else if (language === "english" && voiceGender === "female") {
+      agentId = process.env.ELEVENLABS_AGENT_EN_FEMALE;
+    } else {
+      agentId = process.env.ELEVENLABS_AGENT_EN_MALE;
+    }
+
+    if (!agentId) {
+      console.error("START PAID SESSION - MISSING AGENT ENV VAR:", {
+        language,
+        voiceGender
+      });
+
+      return res.status(500).json({
+        ok: false,
+        error: "Agent ID is not configured for this language and voice combination.",
+        language,
+        voiceGender
+      });
+    }
+
+    applyToAllCallerRecords(phone, {
+      paidSessionAgentId: agentId,
+      paidSessionRequestedAt: new Date().toISOString()
+    });
+
+    console.log("ELEVENLABS START PAID SESSION SELECTED:", {
+      phone,
+      language,
+      voiceGender,
+      sessionType,
+      agentId
+    });
+
+    return res.json({
+      ok: true,
+      agentId,
+      language,
+      voiceGender,
+      sessionType,
+      message: "Starting session."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS START PAID SESSION ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to start paid session.",
+      details: error.message
+    });
+  }
+});
+
+// =====================================================================
+// PHASE 2 — SESSION LIFECYCLE
+// =====================================================================
+
+// 7. start_session_timer
+app.post("/elevenlabs/start-session-timer", (req, res) => {
+  try {
+    console.log("ELEVENLABS START SESSION TIMER REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        message: "Payment not confirmed. Timer not started."
+      });
+    }
+
+    const sessionSeconds = paid.sessionSeconds || paid.totalSessionSeconds || 900;
+
+    // The paid agent calls this as its first action, so we return the full
+    // caller context. This is how the paid agent learns which persona to run
+    // (sessionType) and which language to speak, with the backend as the
+    // single source of truth instead of relying on transfer variables.
+    const records = getAllCallerRecords(phone);
+    const sessionContext = {
+      callerName:
+        pickFirstDefined(records, "callerName") ||
+        pickFirstDefined(records, "customerName") ||
+        "Caller",
+      language: pickFirstDefined(records, "language") || "english",
+      sessionType: pickFirstDefined(records, "sessionType") || "not_provided",
+      voiceGender: pickFirstDefined(records, "voiceGender") || "female"
+    };
+
+    // Idempotent: never restart a clock that is already running.
+    if (paid.timerStarted === true && paid.sessionStartedAt) {
+      const startedAt = new Date(paid.sessionStartedAt).getTime();
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const secondsRemaining = Math.max(0, sessionSeconds - elapsed);
+
+      return res.json({
+        ok: true,
+        alreadyStarted: true,
+        sessionStartedAt: paid.sessionStartedAt,
+        sessionSeconds,
+        secondsRemaining,
+        ...sessionContext,
+        message: "Session timer already running."
+      });
+    }
+
+    const startedAtIso = new Date().toISOString();
+
+    applyToAllCallerRecords(phone, {
+      timerStarted: true,
+      sessionStartedAt: startedAtIso,
+      sessionSeconds,
+      totalSessionSeconds: paid.totalSessionSeconds || sessionSeconds,
+      twoMinuteWarningSent: false,
+      sessionComplete: false
+    });
+
+    console.log("ELEVENLABS SESSION TIMER STARTED:", {
+      phone,
+      startedAtIso,
+      sessionSeconds
+    });
+
+    return res.json({
+      ok: true,
+      started: true,
+      sessionStartedAt: startedAtIso,
+      sessionSeconds,
+      secondsRemaining: sessionSeconds,
+      ...sessionContext,
+      message: "Session timer started."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS START SESSION TIMER ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to start session timer.",
+      details: error.message
+    });
+  }
+});
+
+// 8. check_session_time
+app.post("/elevenlabs/check-session-time", (req, res) => {
+  try {
+    console.log("ELEVENLABS CHECK SESSION TIME REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        message: "Payment not confirmed."
+      });
+    }
+
+    const sessionSeconds = paid.sessionSeconds || paid.totalSessionSeconds || 900;
+
+    if (paid.timerStarted !== true || !paid.sessionStartedAt) {
+      return res.json({
+        ok: true,
+        timerStarted: false,
+        secondsRemaining: sessionSeconds,
+        minutesRemaining: Math.ceil(sessionSeconds / 60),
+        expired: false,
+        twoMinuteWarningDue: false,
+        message: "Timer has not started yet."
+      });
+    }
+
+    const startedAt = new Date(paid.sessionStartedAt).getTime();
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    const secondsRemaining = Math.max(0, sessionSeconds - elapsed);
+    const expired = secondsRemaining <= 0;
+    const twoMinuteWarningDue =
+      secondsRemaining > 0 &&
+      secondsRemaining <= 120 &&
+      paid.twoMinuteWarningSent !== true;
+
+    return res.json({
+      ok: true,
+      timerStarted: true,
+      sessionStartedAt: paid.sessionStartedAt,
+      sessionSeconds,
+      elapsedSeconds: elapsed,
+      secondsRemaining,
+      minutesRemaining: Math.ceil(secondsRemaining / 60),
+      expired,
+      twoMinuteWarningDue,
+      twoMinuteWarningSent: paid.twoMinuteWarningSent === true,
+      sessionComplete: paid.sessionComplete === true,
+      message: expired ? "Session time is up." : "Session time remaining."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS CHECK SESSION TIME ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to check session time.",
+      details: error.message
+    });
+  }
+});
+
+// 9. send_two_minute_warning
+// This does NOT send an SMS. It marks the warning as given so the agent
+// only says it once, and returns shouldWarn telling the agent whether to
+// speak the warning now.
+app.post("/elevenlabs/send-two-minute-warning", (req, res) => {
+  try {
+    console.log("ELEVENLABS TWO MINUTE WARNING REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        shouldWarn: false,
+        message: "Payment not confirmed."
+      });
+    }
+
+    if (paid.twoMinuteWarningSent === true) {
+      return res.json({
+        ok: true,
+        alreadySent: true,
+        shouldWarn: false,
+        message: "Two minute warning already given."
+      });
+    }
+
+    applyToAllCallerRecords(phone, {
+      twoMinuteWarningSent: true,
+      twoMinuteWarningSentAt: new Date().toISOString()
+    });
+
+    console.log("ELEVENLABS TWO MINUTE WARNING MARKED:", { phone });
+
+    return res.json({
+      ok: true,
+      shouldWarn: true,
+      message: "You have about two minutes left in this session."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS TWO MINUTE WARNING ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      shouldWarn: false,
+      error: "Failed to process two minute warning.",
+      details: error.message
+    });
+  }
+});
+
+// 10. end_session
+app.post("/elevenlabs/end-session", (req, res) => {
+  try {
+    console.log("ELEVENLABS END SESSION REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        message: "Payment not confirmed. Nothing to end."
+      });
+    }
+
+    if (paid.sessionComplete === true) {
+      return res.json({
+        ok: true,
+        alreadyComplete: true,
+        message: "Session already ended."
+      });
+    }
+
+    applyToAllCallerRecords(phone, {
+      sessionComplete: true,
+      completedAt: new Date().toISOString(),
+      completedReason: req.body.reason || "agent_ended"
+    });
+
+    console.log("ELEVENLABS SESSION ENDED:", { phone });
+
+    return res.json({
+      ok: true,
+      sessionComplete: true,
+      message: "Session ended."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS END SESSION ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to end session.",
+      details: error.message
+    });
+  }
+});
+
+// 11. send_survey_sms
 app.post("/send-survey-sms", async (req, res) => {
   try {
     console.log("SURVEY SMS REQUEST:", req.body);
@@ -483,10 +1246,10 @@ app.post("/send-survey-sms", async (req, res) => {
     const phone = normalizePhone(rawPhone);
 
     const callId = pickRealValue(
-  req.body.call_id,
-  req.body.callId,
-  req.body.ai_call_id
-);
+      req.body.call_id,
+      req.body.callId,
+      req.body.ai_call_id
+    );
 
     let payment =
       (phone && payments.get(phone)) ||
@@ -500,8 +1263,7 @@ app.post("/send-survey-sms", async (req, res) => {
             normalizePhone(p.phone) === phone ||
             normalizePhone(p.callerPhone) === phone ||
             p.callId === callId ||
-            p.aiCallId === callId ||
-            p.fallbackTwilioCallSid === callId
+            p.aiCallId === callId
           )
         );
       });
@@ -557,27 +1319,26 @@ app.post("/send-survey-sms", async (req, res) => {
       body: surveyText
     });
 
-  if (payment) {
-  payment.surveySmsSent = true;
-  payment.surveySmsSentAt = new Date().toISOString();
+    if (payment) {
+      payment.surveySmsSent = true;
+      payment.surveySmsSentAt = new Date().toISOString();
 
-  payment.surveyReminderSent = true;
-  payment.surveyDue = false;
+      payment.surveyReminderSent = true;
+      payment.surveyDue = false;
 
-  payment.surveySmsSid = msg.sid;
+      payment.surveySmsSid = msg.sid;
 
-  payment.completedReason =
-    payment.completedReason || "survey_sent";
+      payment.completedReason = payment.completedReason || "survey_sent";
 
-  payment.updatedAt = new Date().toISOString();
-}
+      payment.updatedAt = new Date().toISOString();
+    }
 
- console.log("SURVEY SMS SENT:", {
-  to: toPhone,
-  sid: msg.sid,
-  surveySmsSent: true,
-  surveyReminderSent: true
-});
+    console.log("SURVEY SMS SENT:", {
+      to: toPhone,
+      sid: msg.sid,
+      surveySmsSent: true,
+      surveyReminderSent: true
+    });
 
     return res.json({
       ok: true,
@@ -596,631 +1357,6 @@ app.post("/send-survey-sms", async (req, res) => {
       error: error.message
     });
   }
-});
-
-app.post("/twilio/voice", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const gather = response.gather({
-    numDigits: 1,
-    action: "/twilio/collect-language",
-    method: "POST",
-    timeout: 10
-  });
-
-  gather.say(
-    { voice:  "Polly.Kendra", language: "en-US" },
-    "Welcome to LyvvOut,  a confidential, judgment-free hotline. I'm your intake guide. This call is completely private. Nothing is recorded. I am going to collect a few quick details to get your session started. Press 1 for English. Press 2 for Spanish."
-  );
-
-  response.redirect("/twilio/voice");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/collect-language", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const digit = req.body.Digits;
-  const callSid = req.body.CallSid;
-  const from = normalizePhone(req.body.From);
-
-  const language = digit === "2" ? "spanish" : "english";
-
-  const paymentRecord = {
-    callId: callSid,
-    twilioCallSid: callSid,
-    callerPhone: from,
-    language,
-    paid: false,
-    sessionComplete: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-
-  payments.set(callSid, paymentRecord);
-  if (from) payments.set(from, paymentRecord);
-
-  const gather = response.gather({
-    input: "speech",
-    action: "/twilio/collect-name",
-    method: "POST",
-    timeout: 6,
-    speechTimeout: "auto"
-  });
-
-  if (language === "spanish") {
-    gather.say(
-      { voice: "Polly.Mia", language: "es-MX" },
-      "Por favor, diga su nombre después del tono."
-    );
-  } else {
-    gather.say(
-      { voice:  "Polly.Kendra", language: "en-US" },
-      "Please say your name after the tone."
-    );
-  }
-
-  response.redirect("/twilio/collect-language");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/collect-name", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const callerName = req.body.SpeechResult || "Caller";
-
-  const payment = payments.get(callSid) || {};
-  payment.callerName = callerName;
-  payment.customerName = callerName;
-  payment.updatedAt = new Date().toISOString();
-
-  payments.set(callSid, payment);
-
-  const gather = response.gather({
-    input: "dtmf",
-    action: "/twilio/collect-phone",
-    method: "POST",
-    timeout: 15,
-    finishOnKey: "#"
-  });
-
-  gather.say(
-    { voice: "Polly.Mia", language: payment.language === "spanish" ? "es-MX" : "en-US" },
-    payment.language === "spanish"
-      ? "Ahora ingrese su número de teléfono de diez dígitos, luego presione la tecla numeral."
-      : "Now enter your ten digit phone number, then press the pound key."
-  );
-
-  response.redirect("/twilio/collect-name");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/collect-phone", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const digits = String(req.body.Digits || "").replace(/\D/g, "");
-
-  const payment = payments.get(callSid) || {};
-  const isSpanish = payment.language === "spanish";
-
-  if (digits.length < 10) {
-    const gather = response.gather({
-      input: "dtmf",
-      action: "/twilio/collect-phone",
-      method: "POST",
-      timeout: 20,
-      finishOnKey: "#"
-    });
-
-    gather.say(
-      {
-        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
-        language: isSpanish ? "es-MX" : "en-US"
-      },
-      isSpanish
-        ? "No recibí un número de teléfono completo. Por favor ingrese su número de diez dígitos y luego presione la tecla numeral."
-        : "I did not receive a full phone number. Please enter your ten digit phone number and then press the pound key."
-    );
-
-    response.redirect("/twilio/collect-phone");
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  const phone = normalizePhone(digits);
-
-  payment.customerPhone = phone;
-  payment.phone = phone;
-  payment.updatedAt = new Date().toISOString();
-
-  payments.set(callSid, payment);
-  payments.set(phone, payment);
-
-  pendingCallerNames.set(phone, payment.callerName || "Caller");
-
-  const spokenPhone = formatPhoneForSpeech(phone);
-
-  const gather = response.gather({
-    numDigits: 1,
-    action: "/twilio/confirm-phone",
-    method: "POST",
-    timeout: 10
-  });
-
-  gather.say(
-    {
-      voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
-      language: isSpanish ? "es-MX" : "en-US"
-    },
-    isSpanish
-      ? `Tengo su número como ${spokenPhone}. Si es correcto, presione 1. Para ingresarlo nuevamente, presione 2.`
-      : `I have your phone number as ${spokenPhone}. If that is correct, press 1. To re-enter it, press 2.`
-  );
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/confirm-phone", async (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const digit = req.body.Digits;
-
-  const payment = payments.get(callSid) || {};
-  const isSpanish = payment.language === "spanish";
-
-  if (digit === "2") {
-    const gather = response.gather({
-      input: "dtmf",
-      action: "/twilio/collect-phone",
-      method: "POST",
-      timeout: 20,
-      finishOnKey: "#"
-    });
-
-    gather.say(
-      {
-        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
-        language: isSpanish ? "es-MX" : "en-US"
-      },
-      isSpanish
-        ? "No hay problema. Ingrese nuevamente su número de teléfono de diez dígitos, y luego presione la tecla de número."
-        : "No problem. Please re-enter your ten digit phone number, then press the pound key."
-    );
-
-    response.redirect("/twilio/collect-phone");
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  try {
-    await twilioClient.messages.create({
-      to: payment.customerPhone,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      body:
-        isSpanish
-          ? "LyvvOut: Aquí está su enlace seguro de pago para su sesión de 15 minutos de LyvvOut: https://lyvvout.com/#payment. Responda STOP para cancelar mensajes. Responda HELP para ayuda. Pueden aplicarse tarifas de mensajes y datos."
-          : "LyvvOut: Here is your secure payment link for your 15-minute LyvvOut session: https://lyvvout.com/#payment. Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply."
-    });
-
-    response.say(
-      {
-        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
-        language: isSpanish ? "es-MX" : "en-US"
-      },
-      isSpanish
-        ? "Le acabamos de enviar un enlace seguro de pago por mensaje de texto. Complete el pago usando el mismo número de teléfono que proporcionó."
-        : "We just texted your secure payment link. Please complete payment using the same phone number you entered."
-    );
-
-    const gather = response.gather({
-      numDigits: 1,
-      action: "/twilio/check-payment",
-      method: "POST",
-      timeout: 60
-    });
-
-    gather.say(
-      {
-        voice: isSpanish ? "Polly.Mia" : "Polly.Kendra",
-        language: isSpanish ? "es-MX" : "en-US"
-      },
-      isSpanish
-        ? "Cuando complete el pago, presione 1 para continuar."
-        : "When you complete payment, press 1 to continue."
-    );
-  } catch (error) {
-    console.error("TWILIO PAYMENT SMS ERROR:", error.message);
-
-    response.say(
-      { voice: isSpanish ? "Polly.Mia" : "Polly.Kendra", language: isSpanish ? "es-MX" : "en-US" },
-      isSpanish
-        ? "No pudimos enviar el mensaje de pago. Por favor intente nuevamente más tarde."
-        : "We could not send the payment text. Please try again later."
-    );
-
-    response.hangup();
-  }
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/check-payment", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  response.redirect("/twilio/wait-for-payment");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/wait-for-payment", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const from = normalizePhone(req.body.From);
-
-  const allPayments = [...new Set([...payments.values()])];
-
-  const payment =
-    allPayments.find((p) =>
-      p &&
-      p.paid === true &&
-      (
-        p.callId === callSid ||
-        p.twilioCallSid === callSid ||
-        normalizePhone(p.customerPhone) === from ||
-        normalizePhone(p.phone) === from ||
-        normalizePhone(p.callerPhone) === from
-      )
-    ) ||
-    payments.get(from) ||
-    payments.get(callSid);
-
-  console.log("WAIT FOR PAYMENT CHECK:", {
-    callSid,
-    from,
-    found: !!payment,
-    paid: payment?.paid,
-    customerPhone: payment?.customerPhone,
-    phone: payment?.phone,
-    paymentCallId: payment?.callId
-  });
-
-  if (payment?.paid === true) {
-    if (callSid) {
-      payment.twilioCallSid = callSid;
-      payments.set(callSid, payment);
-    }
-
-    if (from) payments.set(from, payment);
-
-    response.say(
-      {
-        voice: payment.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-        language: payment.language === "spanish" ? "es-MX" : "en-US"
-      },
-      payment.language === "spanish"
-        ? "Pago confirmado. Continuemos."
-        : "Payment confirmed. Let's continue."
-    );
-
-    response.redirect("/twilio/collect-session-type");
-  } else {
-    response.say(
-      {
-        voice: payment?.language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-        language: payment?.language === "spanish" ? "es-MX" : "en-US"
-      },
-      payment?.language === "spanish"
-        ? "Aún estamos esperando la confirmación del pago. Permanezca en la línea."
-        : "We are still waiting for payment confirmation. Please stay on the line."
-    );
-
-    response.pause({ length: 10 });
-    response.redirect("/twilio/wait-for-payment");
-  }
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/elevenlabs/check-payment", (req, res) => {
-  try {
-    console.log("ELEVENLABS CHECK PAYMENT REQUEST:", req.body);
-
-    const rawPhone =
-      req.body.phone_number ||
-      req.body.phone ||
-      req.body.customerPhone ||
-      req.body.callerPhone ||
-      "";
-
-    const phone = normalizePhone(rawPhone);
-
-    if (!phone) {
-      return res.status(400).json({
-        ok: false,
-        paid: false,
-        error: "Missing phone number."
-      });
-    }
-
-    const allPayments = [...new Set([...payments.values()])];
-
-    const payment =
-      allPayments.find((p) =>
-        p &&
-        (
-          normalizePhone(p.customerPhone) === phone ||
-          normalizePhone(p.phone) === phone ||
-          normalizePhone(p.callerPhone) === phone
-        )
-      ) ||
-      payments.get(phone);
-
-    console.log("ELEVENLABS CHECK PAYMENT RESULT:", {
-      phone,
-      found: !!payment,
-      paid: payment?.paid,
-      customerPhone: payment?.customerPhone,
-      paymentCallId: payment?.callId
-    });
-
-    if (payment?.paid === true) {
-      return res.json({
-        ok: true,
-        paid: true,
-        phone,
-        callerName: payment.callerName || payment.customerName || "Caller",
-        language: payment.language || "english",
-        sessionLength: payment.plan?.sessionLength || payment.sessionLength || "15",
-        sessionSeconds: payment.sessionSeconds || 900,
-        message:
-          payment.language === "spanish"
-            ? "Pago confirmado."
-            : "Payment confirmed."
-      });
-    }
-
-    return res.json({
-      ok: true,
-      paid: false,
-      phone,
-      message:
-        payment?.language === "spanish"
-          ? "Aún estamos esperando la confirmación del pago."
-          : "We are still waiting for payment confirmation."
-    });
-  } catch (error) {
-    console.error("ELEVENLABS CHECK PAYMENT ERROR:", error);
-
-    return res.status(500).json({
-      ok: false,
-      paid: false,
-      error: "Failed to check payment.",
-      details: error.message
-    });
-  }
-});
-
-app.post("/twilio/collect-session-type", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const from = normalizePhone(req.body.From);
-
-  const payment =
-    payments.get(callSid) ||
-    payments.get(from) ||
-    [...payments.values()].find((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        (
-          p.callId === callSid ||
-          p.twilioCallSid === callSid ||
-          normalizePhone(p.customerPhone) === from ||
-          normalizePhone(p.phone) === from
-        )
-      );
-    });
-
-  const language = payment?.language || "english";
-
-  const gather = response.gather({
-    numDigits: 1,
-    action: "/twilio/collect-voice-gender",
-    method: "POST",
-    timeout: 10
-  });
-
-  if (language === "spanish") {
-    gather.say(
-  { voice: "Polly.Mia", language: "es-MX" },
-  "Ahora elija el tono de su sesión. Presione 1 para Solo Escuchar: silencio, presencia, sin consejos. Presione 2 para Reaccionar Conmigo: validación y reacciones reales. Presione 3 para Sesión de Ánimo: apoyo, motivación y energía positiva. Presione 4 para Hablar Claro: honesto, firme y directo. Presione 5 para Sin Filtro: crudo, expresivo y sin juicio."
-);
-  } else {
-    gather.say(
-  { voice:  "Polly.Kendra", language: "en-US" },
-  "Now let’s set the tone for your session. Press 1 for Just Listen: quiet, present, no advice. Press 2 for React With Me: validation and real reactions. Press 3 for Hype Session: uplifting and fully in your corner. Press 4 for Keep It Real: honest, grounded, and direct. Press 5 for No Filter: raw, expressive, zero judgment."
-);
-  }
-
-  response.redirect("/twilio/collect-session-type");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/collect-voice-gender", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const from = normalizePhone(req.body.From);
-  const digit = req.body.Digits;
-
-  const sessionTypes = {
-    "1": "just_listen",
-    "2": "react_with_me",
-    "3": "hype_session",
-    "4": "keep_it_real",
-    "5": "no_filter"
-  };
-
-  const sessionType = sessionTypes[digit] || "hype_session";
-
-  const payment =
-    payments.get(callSid) ||
-    payments.get(from) ||
-    findMostRecentActivePaidPayment();
-
-  if (payment) {
-    payment.sessionType = sessionType;
-    payment.updatedAt = new Date().toISOString();
-    payments.set(callSid, payment);
-    if (from) payments.set(from, payment);
-  }
-
-  const language = payment?.language || "english";
-
-  const gather = response.gather({
-    numDigits: 1,
-    action: "/twilio/start-elevenlabs",
-    method: "POST",
-    timeout: 10
-  });
-
-  if (language === "spanish") {
-    gather.say(
-      { voice: "Polly.Mia", language: "es-MX" },
-      "Elija su preferencia de voz. Presione 1 para voz femenina. Presione 2 para voz masculina."
-    );
-  } else {
-    gather.say(
-      { voice:  "Polly.Kendra", language: "en-US" },
-      "Choose your voice preference. Press 1 for a female voice. Press 2 for a male voice."
-    );
-  }
-
-  response.redirect("/twilio/collect-voice-gender");
-
-  res.type("text/xml");
-  res.send(response.toString());
-});
-
-app.post("/twilio/start-elevenlabs", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const response = new VoiceResponse();
-
-  const callSid = req.body.CallSid;
-  const from = normalizePhone(req.body.From);
-  const digit = req.body.Digits;
-
-  const voiceGender = digit === "2" ? "male" : "female";
-
-  const payment =
-    payments.get(callSid) ||
-    payments.get(from) ||
-    findMostRecentActivePaidPayment();
-
-  if (!payment) {
-    console.log("START ELEVENLABS FAILED - NO PAYMENT FOUND", {
-      callSid,
-      from,
-      digit
-    });
-
-    response.say(
-      { voice: "Polly.Kendra", language: "en-US" },
-      "We could not find your paid session. Please call back or contact LyvvOut support."
-    );
-    response.hangup();
-
-    res.type("text/xml");
-    return res.send(response.toString());
-  }
-
-  payment.voiceGender = voiceGender;
-  payment.updatedAt = new Date().toISOString();
-
-  const language = payment.language || "english";
-
-  let agentId;
-
-  if (language === "spanish" && voiceGender === "female") {
-    agentId = process.env.ELEVENLABS_AGENT_ES_FEMALE;
-  } else if (language === "spanish" && voiceGender === "male") {
-    agentId = process.env.ELEVENLABS_AGENT_ES_MALE;
-  } else if (language === "english" && voiceGender === "female") {
-    agentId = process.env.ELEVENLABS_AGENT_EN_FEMALE;
-  } else {
-    agentId = process.env.ELEVENLABS_AGENT_EN_MALE;
-  }
-
-  payment.elevenLabsAgentId = agentId;
-  payments.set(callSid, payment);
-  if (from) payments.set(from, payment);
-  if (payment.customerPhone) payments.set(payment.customerPhone, payment);
-
-  console.log("START ELEVENLABS SELECTED:", {
-    callSid,
-    from,
-    language,
-    voiceGender,
-    sessionType: payment.sessionType,
-    agentId,
-    callerName: payment.callerName,
-    customerPhone: payment.customerPhone
-  });
-
-  response.say(
-    {
-      voice: language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-      language: language === "spanish" ? "es-MX" : "en-US"
-    },
-    language === "spanish"
-      ? "Perfecto. Vamos a comenzar su sesión ahora."
-      : "Perfect. We are starting your session now."
-  );
-
-  response.pause({ length: 1 });
-
-  response.say(
-    {
-      voice: language === "spanish" ? "Polly.Mia" : "Polly.Kendra",
-      language: language === "spanish" ? "es-MX" : "en-US"
-    },
-    language === "spanish"
-      ? "La conexión con el agente de voz de ElevenLabs será el siguiente paso."
-      : "The ElevenLabs voice connection will be the next step."
-  );
-
-  response.hangup();
-
-  res.type("text/xml");
-  res.send(response.toString());
 });
 
 app.listen(PORT, () => {
