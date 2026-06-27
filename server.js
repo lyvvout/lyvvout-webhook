@@ -237,13 +237,13 @@ function findMostRecentActivePaidPayment() {
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "14.99",
+    price: "19.99",
     seconds: 900,
   },
 
   "https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "14.99",
+    price: "19.99",
     seconds: 900,
   },
 };
@@ -303,7 +303,7 @@ app.post(
       if (!matchedPlan) {
         const amount = session.amount_total;
 
-        if (amount === 1499) {
+        if (amount === 1499 || amount === 1999) {
           matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
         }
       }
@@ -841,17 +841,40 @@ app.post("/elevenlabs/start-paid-session", (req, res) => {
     const voiceGender = pickFirstDefined(records, "voiceGender") || "female";
     const sessionType = pickFirstDefined(records, "sessionType") || "not_provided";
 
-    let agentId;
+    // Each language+gender maps to a POOL of interchangeable agents that share
+    // the same prompt and tools but use different primary voices. We pick one
+    // at random so callers do not always hear the identical voice. To add or
+    // remove a voice, just edit the lists below.
+    const AGENT_POOLS = {
+      spanish_female: [
+        "agent_4401kvvrnmhhew7am47vxneh570e",
+        "agent_2301kw5j7dddekv93pt6pdd9psjn",
+        "agent_6901kw5jgwegffv8k2k42man68xs",
+        "agent_9901kw5jnqbhegjbqpfr0pgsbk4m"
+      ],
+      spanish_male: [
+        "agent_5501kvvrmmj9feva4bpy3ytqp3tn",
+        "agent_8001kw5hk93sfd7tmfc7gzde219e",
+        "agent_4901kw5hsbcmfnkrtg5y17ed8ser",
+        "agent_0101kw5hwsktfeeb8yr4zf5f32mj"
+      ],
+      english_female: [
+        "agent_9301kvvn3aeceexbj5860ne19mn6",
+        "agent_9401kw5kh5chf1pb4hsgs642rcjr",
+        "agent_9201kw5kkmqkefj8bnbefxms3ttv",
+        "agent_1201kw5kp472ef6bm2fx4aswkagv"
+      ],
+      english_male: [
+        "agent_4801kvvn6amhf079xsdpt76cmzfm",
+        "agent_0801kw5k267zfyzt0qkfyfy3xt1a",
+        "agent_7601kw5k4vz2ebxvtx8en57cghh8",
+        "agent_0901kw5k71b6ew38d225vzfke322"
+      ]
+    };
 
-    if (language === "spanish" && voiceGender === "female") {
-      agentId = process.env.ELEVENLABS_AGENT_ES_FEMALE;
-    } else if (language === "spanish" && voiceGender === "male") {
-      agentId = process.env.ELEVENLABS_AGENT_ES_MALE;
-    } else if (language === "english" && voiceGender === "female") {
-      agentId = process.env.ELEVENLABS_AGENT_EN_FEMALE;
-    } else {
-      agentId = process.env.ELEVENLABS_AGENT_EN_MALE;
-    }
+    const poolKey = `${language === "spanish" ? "spanish" : "english"}_${voiceGender === "male" ? "male" : "female"}`;
+    const pool = AGENT_POOLS[poolKey] || [];
+    const agentId = pool[Math.floor(Math.random() * pool.length)];
 
     if (!agentId) {
       console.error("START PAID SESSION - MISSING AGENT ENV VAR:", {
