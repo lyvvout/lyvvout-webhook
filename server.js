@@ -237,13 +237,13 @@ function findMostRecentActivePaidPayment() {
 const PAYMENT_LINKS = {
   "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "19.99",
+    price: "14.99",
     seconds: 900,
   },
 
   "https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
     sessionLength: "15",
-    price: "19.99",
+    price: "14.99",
     seconds: 900,
   },
 };
@@ -303,7 +303,7 @@ app.post(
       if (!matchedPlan) {
         const amount = session.amount_total;
 
-        if (amount === 1999) {
+        if (amount === 1499) {
           matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
         }
       }
@@ -641,6 +641,7 @@ app.post("/elevenlabs/check-payment", (req, res) => {
     return res.json({
       ok: true,
       paid: false,
+      keepWaiting: true,
       phone,
       message:
         language === "spanish"
