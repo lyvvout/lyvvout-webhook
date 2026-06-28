@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
+const { createClient } = require("@supabase/supabase-js");
 
 // Twilio is kept ONLY as the SMS sender (payment link + survey link).
 // The old Twilio voice IVR intake has been removed. ElevenLabs now handles
@@ -19,12 +20,119 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 3000;
 
-// Temporary in-memory store.
-// Fine for testing. Later use Redis, Supabase, Firebase, or a database.
-// WARNING: a Render restart or redeploy erases everything here, which kills
-// any call that is mid-session. Move this to a database before real launch.
-const payments = new Map();
-const pendingCallerNames = new Map();
+// =====================================================================
+// PERSISTENT STORAGE (Supabase)
+// One row per caller phone (E.164). This replaces the old in-memory Maps,
+// so a Render restart or redeploy no longer wipes a live call's state.
+// =====================================================================
+
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error(
+    "WARNING: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY are not set. " +
+    "Caller state cannot be stored. Set these in your environment."
+  );
+}
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+const SESSIONS_TABLE = "lyvvout_sessions";
+
+// camelCase (code) -> snake_case (database column).
+// Aliases customerName/displayName collapse onto caller_name on purpose.
+const FIELD_MAP = {
+  phone: "phone",
+  callId: "call_id",
+  source: "source",
+  paid: "paid",
+  language: "language",
+  callerName: "caller_name",
+  customerName: "caller_name",
+  displayName: "caller_name",
+  sessionType: "session_type",
+  sessionTypeLabel: "session_type_label",
+  voiceGender: "voice_gender",
+  sessionSeconds: "session_seconds",
+  totalSessionSeconds: "total_session_seconds",
+  timerStarted: "timer_started",
+  sessionStartedAt: "session_started_at",
+  twoMinuteWarningSent: "two_minute_warning_sent",
+  twoMinuteWarningSentAt: "two_minute_warning_sent_at",
+  sessionComplete: "session_complete",
+  completedAt: "completed_at",
+  completedReason: "completed_reason",
+  surveySmsSent: "survey_sms_sent",
+  surveySmsSentAt: "survey_sms_sent_at",
+  surveySmsSid: "survey_sms_sid",
+  stripeSessionId: "stripe_session_id",
+  amountTotal: "amount_total",
+  currency: "currency",
+  paymentStatus: "payment_status",
+  paidAt: "paid_at",
+  paidSessionAgentId: "paid_session_agent_id",
+  paidSessionRequestedAt: "paid_session_requested_at",
+  customerEmail: "customer_email"
+};
+
+// camelCase updates -> snake_case DB patch. Null values are written through
+// (intake uses them to reset a returning caller's row to a clean slate).
+function toRow(updates) {
+  const row = {};
+  for (const [key, value] of Object.entries(updates)) {
+    const col = FIELD_MAP[key];
+    if (col) row[col] = value;
+  }
+  return row;
+}
+
+// DB row -> the exact camelCase record shape the routes already read.
+function toRecord(row) {
+  if (!row) return null;
+
+  const sessionSeconds = row.session_seconds == null ? 900 : row.session_seconds;
+  const sessionLength = String(Math.round(sessionSeconds / 60));
+
+  return {
+    phone: row.phone,
+    customerPhone: row.phone,
+    callerPhone: row.phone,
+    callId: row.call_id,
+    source: row.source,
+    paid: row.paid === true,
+    language: row.language,
+    callerName: row.caller_name,
+    customerName: row.caller_name,
+    displayName: row.caller_name,
+    sessionType: row.session_type,
+    sessionTypeLabel: row.session_type_label,
+    voiceGender: row.voice_gender,
+    sessionSeconds,
+    sessionLength,
+    plan: { sessionLength, seconds: sessionSeconds },
+    totalSessionSeconds: row.total_session_seconds,
+    timerStarted: row.timer_started === true,
+    sessionStartedAt: row.session_started_at,
+    twoMinuteWarningSent: row.two_minute_warning_sent === true,
+    twoMinuteWarningSentAt: row.two_minute_warning_sent_at,
+    sessionComplete: row.session_complete === true,
+    completedAt: row.completed_at,
+    completedReason: row.completed_reason,
+    surveySmsSent: row.survey_sms_sent === true,
+    surveySmsSentAt: row.survey_sms_sent_at,
+    surveySmsSid: row.survey_sms_sid,
+    stripeSessionId: row.stripe_session_id,
+    amountTotal: row.amount_total,
+    currency: row.currency,
+    paymentStatus: row.payment_status,
+    paidAt: row.paid_at,
+    paidSessionAgentId: row.paid_session_agent_id,
+    customerEmail: row.customer_email,
+    updatedAt: row.updated_at,
+    createdAt: row.created_at
+  };
+}
 
 function normalizePhone(value) {
   if (!value) return "";
@@ -32,17 +140,6 @@ function normalizePhone(value) {
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   return String(value).trim();
-}
-
-function formatPhoneForSpeech(phone) {
-  const digits = String(phone || "").replace(/\D/g, "");
-  const last10 = digits.length === 11 && digits.startsWith("1")
-    ? digits.slice(1)
-    : digits;
-
-  if (last10.length !== 10) return phone;
-
-  return `${last10.slice(0, 3)}-${last10.slice(3, 6)}-${last10.slice(6)}`;
 }
 
 // Human-readable label for a session type code.
@@ -108,31 +205,32 @@ function normalizeVoiceGender(value) {
   return "";
 }
 
-// Return every distinct caller record that matches this phone, by any phone
-// field OR by direct key. This is what lets us survive the fact that intake
-// and the Stripe webhook can create two separate records for one caller.
-function getAllCallerRecords(phone) {
+// ---------------------------------------------------------------------
+// The five storage choke points, now backed by Supabase. Every route uses
+// only these, so the routes themselves stay identical apart from async/await.
+// ---------------------------------------------------------------------
+
+// All caller records matching this phone. One row per phone, so this is 0 or
+// 1 record, returned as an array so callers using pickFirstDefined still work.
+async function getAllCallerRecords(phone) {
   const normalized = normalizePhone(phone);
   if (!normalized) return [];
 
-  const all = [...new Set([...payments.values()])].filter((p) => {
-    return (
-      p &&
-      (
-        normalizePhone(p.customerPhone) === normalized ||
-        normalizePhone(p.phone) === normalized ||
-        normalizePhone(p.callerPhone) === normalized
-      )
-    );
-  });
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .select("*")
+    .eq("phone", normalized)
+    .limit(1);
 
-  const direct = payments.get(normalized);
-  if (direct && !all.includes(direct)) all.push(direct);
+  if (error) {
+    console.error("SUPABASE getAllCallerRecords ERROR:", error.message);
+    throw error;
+  }
 
-  return all;
+  return (data || []).map(toRecord);
 }
 
-// First non-empty value of a field across a set of records.
+// First non-empty value of a field across a set of already-fetched records.
 function pickFirstDefined(records, field) {
   for (const r of records) {
     if (r && r[field] !== undefined && r[field] !== null && r[field] !== "") {
@@ -142,111 +240,91 @@ function pickFirstDefined(records, field) {
   return undefined;
 }
 
-// The confirmed-paid record for a caller, most recent first.
-function findPaidCallerRecord(phone) {
-  const records = getAllCallerRecords(phone);
-
-  const paid = records
-    .filter((p) => p.paid === true)
-    .sort((a, b) => {
-      const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
-      const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
-      return bTime - aTime;
-    });
-
-  return paid[0] || null;
-}
-
-// Write the same updates onto EVERY record that matches this phone, so intake
-// and paid records stay in sync no matter which one a later tool resolves.
-function applyToAllCallerRecords(phone, updates) {
-  const records = getAllCallerRecords(phone);
-  const now = new Date().toISOString();
-
-  records.forEach((rec) => {
-    Object.assign(rec, updates, { updatedAt: now });
-  });
-
+// The confirmed-paid record for a caller, or null.
+async function findPaidCallerRecord(phone) {
   const normalized = normalizePhone(phone);
-  if (normalized && records.length > 0) {
-    const paid = records.find((r) => r.paid === true);
-    payments.set(normalized, paid || records[0]);
+  if (!normalized) return null;
+
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .select("*")
+    .eq("phone", normalized)
+    .eq("paid", true)
+    .limit(1);
+
+  if (error) {
+    console.error("SUPABASE findPaidCallerRecord ERROR:", error.message);
+    throw error;
   }
 
-  return records;
+  return data && data[0] ? toRecord(data[0]) : null;
 }
 
-function findMostRecentFallbackPayment() {
-  const fallbackPayments = [...payments.values()]
-    .filter((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        p.sessionComplete !== true &&
-        (
-          p.fallbackRequested === true ||
-          p.fallbackEntryHitAt ||
-          p.queueFallbackTriggeredAt
-        )
-      );
-    })
-    .sort((a, b) => {
-      const aTime = new Date(
-        a.fallbackEntryHitAt ||
-        a.queueFallbackTriggeredAt ||
-        a.updatedAt ||
-        a.paidAt ||
-        0
-      ).getTime();
+// Update the existing row for this phone. Returns the updated record(s) as an
+// array (0 or 1). An empty array means no row existed — callers rely on that
+// to return "run save_intake_info first" / "payment not confirmed".
+async function applyToAllCallerRecords(phone, updates) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return [];
 
-      const bTime = new Date(
-        b.fallbackEntryHitAt ||
-        b.queueFallbackTriggeredAt ||
-        b.updatedAt ||
-        b.paidAt ||
-        0
-      ).getTime();
+  const row = toRow(updates);
+  row.updated_at = new Date().toISOString();
 
-      return bTime - aTime;
-    });
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .update(row)
+    .eq("phone", normalized)
+    .select();
 
-  return fallbackPayments[0] || null;
+  if (error) {
+    console.error("SUPABASE applyToAllCallerRecords ERROR:", error.message);
+    throw error;
+  }
+
+  return (data || []).map(toRecord);
 }
 
-function findMostRecentActivePaidPayment() {
-  const uniquePayments = [...new Set([...payments.values()])];
+// Create-or-update the row for this phone. Used by intake and the Stripe
+// webhook. On conflict, only the supplied columns are written, so fields not
+// passed (e.g. caller_name, language at payment time) are preserved.
+async function upsertCallerRecord(phone, updates) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) throw new Error("upsertCallerRecord requires a phone.");
 
-  const activePayments = uniquePayments
-    .filter((p) => {
-      return (
-        p &&
-        p.paid === true &&
-        p.sessionComplete !== true &&
-        p.timerStarted !== true
-      );
-    })
-    .sort((a, b) => {
-      const aTime = new Date(a.updatedAt || a.paidAt || 0).getTime();
-      const bTime = new Date(b.updatedAt || b.paidAt || 0).getTime();
-      return bTime - aTime;
-    });
+  const row = toRow(updates);
+  row.phone = normalized;
+  row.updated_at = new Date().toISOString();
 
-  return activePayments[0] || null;
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .upsert(row, { onConflict: "phone" })
+    .select();
+
+  if (error) {
+    console.error("SUPABASE upsertCallerRecord ERROR:", error.message);
+    throw error;
+  }
+
+  return data && data[0] ? toRecord(data[0]) : null;
 }
 
-const PAYMENT_LINKS = {
-  "https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00": {
-    sessionLength: "15",
-    price: "19.99",
-    seconds: 900,
-  },
+// Fallback for survey SMS: most recent paid, not-yet-complete caller.
+async function findMostRecentPaidRecord() {
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .select("*")
+    .eq("paid", true)
+    .eq("session_complete", false)
+    .order("updated_at", { ascending: false })
+    .limit(1);
 
-  "https://buy.stripe.com/test_aFadRa715deu0ug4aR3Ru00": {
-    sessionLength: "15",
-    price: "19.99",
-    seconds: 900,
-  },
-};
+  if (error) {
+    console.error("SUPABASE findMostRecentPaidRecord ERROR:", error.message);
+    throw error;
+  }
+
+  return data && data[0] ? toRecord(data[0]) : null;
+}
 
 app.use(cors());
 
@@ -271,122 +349,62 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
 
-      const callId =
-        session.client_reference_id ||
-        session.metadata?.call_id ||
-        session.metadata?.callId ||
-        session.customer_details?.phone ||
-        session.id;
+        // The caller is told to pay with the same phone they gave at intake,
+        // so the intake row already exists keyed by this phone. We flip it
+        // to paid and attach the payment details.
+        const phone = normalizePhone(session.customer_details?.phone || "");
 
-      const paymentLinkUrl = session.metadata?.payment_link_url;
+        const sessionSeconds =
+          Number(session.metadata?.seconds) ||
+          (session.amount_total === 1499 ? 900 : 900);
 
-      let matchedPlan = null;
+        const updates = {
+          paid: true,
+          stripeSessionId: session.id,
+          customerEmail: session.customer_details?.email || null,
+          amountTotal: session.amount_total,
+          currency: session.currency,
+          paymentStatus: session.payment_status,
+          sessionSeconds,
+          totalSessionSeconds: sessionSeconds,
+          paidAt: new Date().toISOString(),
 
-      // Best option: identify by metadata if you add metadata to each payment link.
-      if (session.metadata?.session_length) {
-        matchedPlan = {
-          sessionLength: session.metadata.session_length,
-          price: session.metadata.price,
-          seconds: Number(session.metadata.seconds),
+          // Fresh timer/session state at payment time. The paid agent starts
+          // the clock later via start_session_timer.
+          timerStarted: false,
+          sessionStartedAt: null,
+          twoMinuteWarningSent: false,
+          surveySmsSent: false,
+          sessionComplete: false
         };
-      }
 
-      // Fallback: identify by full payment link URL if sent in metadata.
-      if (!matchedPlan && paymentLinkUrl && PAYMENT_LINKS[paymentLinkUrl]) {
-        matchedPlan = PAYMENT_LINKS[paymentLinkUrl];
-      }
-
-      // Last fallback: identify by amount.
-      if (!matchedPlan) {
-        const amount = session.amount_total;
-
-        if (amount === 1499 || amount === 1999) {
-          matchedPlan = PAYMENT_LINKS["https://buy.stripe.com/aFadRa715deu0ug4aR3Ru00"];
+        if (phone) {
+          const record = await upsertCallerRecord(phone, updates);
+          console.log("Payment confirmed and linked:", {
+            phone,
+            callerName: record?.callerName,
+            language: record?.language,
+            amount: session.amount_total
+          });
+        } else {
+          // Payment succeeded but Stripe returned no phone to match on. The
+          // payment link must collect the customer's phone number for this
+          // flow to link the payment to the caller.
+          console.error(
+            "PAYMENT WITHOUT MATCHABLE PHONE — enable phone collection on the " +
+            "Stripe payment link. Stripe session:",
+            session.id
+          );
         }
       }
-
-      const now = new Date();
-
-      const sessionSeconds =
-        matchedPlan?.seconds ||
-        Number(session.metadata?.seconds) ||
-        900;
-
-      const paymentRecord = {
-        paid: true,
-        callId,
-        stripeSessionId: session.id,
-        customerPhone: session.customer_details?.phone || null,
-        customerEmail: session.customer_details?.email || null,
-        amountTotal: session.amount_total,
-        currency: session.currency,
-        paymentStatus: session.payment_status,
-        plan: matchedPlan,
-        paidAt: now.toISOString(),
-
-        // SESSION TIMER FIELDS
-        sessionStartedAt: null,
-        timerStarted: false,
-        sessionSeconds,
-        totalSessionSeconds: sessionSeconds,
-
-        twoMinuteWarningSent: false,
-        surveySmsSent: false,
-        sessionComplete: false,
-      };
-
-      // Carry over anything the ElevenLabs intake captured before payment
-      // (language, caller name) so the paid record is complete. The agent
-      // selection later depends on language being present.
-      const intakePhone = normalizePhone(paymentRecord.customerPhone || callId);
-      const intakeRecords = getAllCallerRecords(intakePhone);
-      const intakeRecord =
-        intakeRecords.find((p) => p && p.source === "elevenlabs_intake") ||
-        intakeRecords[0];
-
-      if (intakeRecord) {
-        if (!paymentRecord.language && intakeRecord.language) {
-          paymentRecord.language = intakeRecord.language;
-        }
-        if (!paymentRecord.callerName && intakeRecord.callerName) {
-          paymentRecord.callerName = intakeRecord.callerName;
-          paymentRecord.customerName = intakeRecord.callerName;
-          paymentRecord.displayName = intakeRecord.callerName;
-        }
-        if (!paymentRecord.voiceGender && intakeRecord.voiceGender) {
-          paymentRecord.voiceGender = intakeRecord.voiceGender;
-        }
-        if (!paymentRecord.sessionType && intakeRecord.sessionType) {
-          paymentRecord.sessionType = intakeRecord.sessionType;
-        }
-      }
-
-      payments.set(callId, paymentRecord);
-
-      if (paymentRecord.customerPhone) {
-        payments.set(normalizePhone(paymentRecord.customerPhone), paymentRecord);
-      }
-
-      const pendingName =
-        pendingCallerNames.get(normalizePhone(paymentRecord.customerPhone)) ||
-        pendingCallerNames.get(callId) ||
-        pendingCallerNames.get(normalizePhone(callId));
-
-      if (pendingName && !paymentRecord.callerName) {
-        paymentRecord.callerName = pendingName;
-        paymentRecord.customerName = pendingName;
-        paymentRecord.displayName = pendingName;
-
-        console.log("PENDING CALLER NAME ATTACHED TO PAYMENT:", {
-          phone: paymentRecord.customerPhone,
-          callerName: pendingName
-        });
-      }
-
-      console.log("Payment confirmed:", paymentRecord);
+    } catch (err) {
+      console.error("STRIPE WEBHOOK HANDLER ERROR:", err.message);
+      // Still 200 so Stripe doesn't hammer retries on a logic error; the line
+      // above logs enough to investigate.
     }
 
     res.json({ received: true });
@@ -400,6 +418,7 @@ app.use(express.urlencoded({ extended: false }));
 app.get("/", (req, res) => {
   res.json({
     status: "LyvvOut webhook server running",
+    storage: "supabase",
     health: "/health",
     stripeWebhook: "/stripe-webhook",
     intake: "/elevenlabs/save-intake-info",
@@ -420,35 +439,12 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Temporary diagnostic. Reports which required env vars are SET (true/false),
-// never their values, so nothing secret is exposed. Safe to delete after launch.
-app.get("/env-check", (req, res) => {
-  const isSet = (name) => !!process.env[name];
-  res.json({
-    twilio: {
-      TWILIO_ACCOUNT_SID: isSet("TWILIO_ACCOUNT_SID"),
-      TWILIO_AUTH_TOKEN: isSet("TWILIO_AUTH_TOKEN"),
-      TWILIO_PHONE_NUMBER: isSet("TWILIO_PHONE_NUMBER")
-    },
-    stripe: {
-      STRIPE_SECRET_KEY: isSet("STRIPE_SECRET_KEY"),
-      STRIPE_WEBHOOK_SECRET: isSet("STRIPE_WEBHOOK_SECRET")
-    },
-    elevenlabs_paid_agents: {
-      ELEVENLABS_AGENT_EN_FEMALE: isSet("ELEVENLABS_AGENT_EN_FEMALE"),
-      ELEVENLABS_AGENT_EN_MALE: isSet("ELEVENLABS_AGENT_EN_MALE"),
-      ELEVENLABS_AGENT_ES_FEMALE: isSet("ELEVENLABS_AGENT_ES_FEMALE"),
-      ELEVENLABS_AGENT_ES_MALE: isSet("ELEVENLABS_AGENT_ES_MALE")
-    }
-  });
-});
-
 // =====================================================================
 // PHASE 1 — INTAKE + PAYMENT
 // =====================================================================
 
 // 1. save_intake_info
-app.post("/elevenlabs/save-intake-info", (req, res) => {
+app.post("/elevenlabs/save-intake-info", async (req, res) => {
   try {
     console.log("ELEVENLABS SAVE INTAKE INFO REQUEST:", req.body);
 
@@ -483,26 +479,38 @@ app.post("/elevenlabs/save-intake-info", (req, res) => {
 
     const intakeId = `elevenlabs_${phone}_${Date.now()}`;
 
-    const paymentRecord = {
+    // Full reset: starting intake means a new session for this phone, so we
+    // clear any leftover state from a previous session by the same caller.
+    await upsertCallerRecord(phone, {
       callId: intakeId,
       source: "elevenlabs_intake",
       paid: false,
       language,
       callerName,
-      customerName: callerName,
-      displayName: callerName,
-      customerPhone: phone,
-      phone,
-      sessionComplete: false,
+      sessionType: null,
+      sessionTypeLabel: null,
+      voiceGender: null,
+      sessionSeconds: 900,
+      totalSessionSeconds: 900,
       timerStarted: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    payments.set(intakeId, paymentRecord);
-    payments.set(phone, paymentRecord);
-
-    pendingCallerNames.set(phone, callerName);
+      sessionStartedAt: null,
+      twoMinuteWarningSent: false,
+      twoMinuteWarningSentAt: null,
+      sessionComplete: false,
+      completedAt: null,
+      completedReason: null,
+      surveySmsSent: false,
+      surveySmsSentAt: null,
+      surveySmsSid: null,
+      stripeSessionId: null,
+      amountTotal: null,
+      currency: null,
+      paymentStatus: null,
+      paidAt: null,
+      paidSessionAgentId: null,
+      paidSessionRequestedAt: null,
+      customerEmail: null
+    });
 
     console.log("ELEVENLABS INTAKE SAVED:", {
       intakeId,
@@ -581,7 +589,7 @@ app.post("/send-payment-sms", async (req, res) => {
 });
 
 // 3. check_payment
-app.post("/elevenlabs/check-payment", (req, res) => {
+app.post("/elevenlabs/check-payment", async (req, res) => {
   try {
     console.log("ELEVENLABS CHECK PAYMENT REQUEST:", req.body);
 
@@ -602,23 +610,15 @@ app.post("/elevenlabs/check-payment", (req, res) => {
       });
     }
 
-    const matches = getAllCallerRecords(phone);
+    const matches = await getAllCallerRecords(phone);
 
-    // Prefer a confirmed-paid record. The intake record (paid:false) and the
-    // Stripe record (paid:true) can both exist for one phone, so we must not
-    // just grab the first match.
-    const payment =
-      matches.find((p) => p.paid === true) ||
-      payments.get(phone) ||
-      matches[0];
-
+    const payment = matches.find((p) => p.paid === true) || matches[0];
     const language = pickFirstDefined(matches, "language") || "english";
 
     console.log("ELEVENLABS CHECK PAYMENT RESULT:", {
       phone,
       found: !!payment,
       paid: payment?.paid,
-      customerPhone: payment?.customerPhone,
       paymentCallId: payment?.callId
     });
 
@@ -661,7 +661,7 @@ app.post("/elevenlabs/check-payment", (req, res) => {
 });
 
 // 4. save_session_type
-app.post("/elevenlabs/save-session-type", (req, res) => {
+app.post("/elevenlabs/save-session-type", async (req, res) => {
   try {
     console.log("ELEVENLABS SAVE SESSION TYPE REQUEST:", req.body);
 
@@ -699,7 +699,7 @@ app.post("/elevenlabs/save-session-type", (req, res) => {
       });
     }
 
-    const records = applyToAllCallerRecords(phone, {
+    const records = await applyToAllCallerRecords(phone, {
       sessionType,
       sessionTypeLabel: formatSessionTypeLabel(sessionType)
     });
@@ -734,7 +734,7 @@ app.post("/elevenlabs/save-session-type", (req, res) => {
 });
 
 // 5. save_voice_preference
-app.post("/elevenlabs/save-voice-preference", (req, res) => {
+app.post("/elevenlabs/save-voice-preference", async (req, res) => {
   try {
     console.log("ELEVENLABS SAVE VOICE PREFERENCE REQUEST:", req.body);
 
@@ -766,7 +766,7 @@ app.post("/elevenlabs/save-voice-preference", (req, res) => {
       });
     }
 
-    const records = applyToAllCallerRecords(phone, { voiceGender });
+    const records = await applyToAllCallerRecords(phone, { voiceGender });
 
     if (records.length === 0) {
       return res.status(404).json({
@@ -798,7 +798,7 @@ app.post("/elevenlabs/save-voice-preference", (req, res) => {
 });
 
 // 6. start_paid_session
-app.post("/elevenlabs/start-paid-session", (req, res) => {
+app.post("/elevenlabs/start-paid-session", async (req, res) => {
   try {
     console.log("ELEVENLABS START PAID SESSION REQUEST:", req.body);
 
@@ -818,7 +818,7 @@ app.post("/elevenlabs/start-paid-session", (req, res) => {
       });
     }
 
-    const records = getAllCallerRecords(phone);
+    const records = await getAllCallerRecords(phone);
 
     if (records.length === 0) {
       return res.status(404).json({
@@ -827,7 +827,7 @@ app.post("/elevenlabs/start-paid-session", (req, res) => {
       });
     }
 
-    const paid = findPaidCallerRecord(phone);
+    const paid = await findPaidCallerRecord(phone);
 
     if (!paid) {
       return res.json({
@@ -890,7 +890,7 @@ app.post("/elevenlabs/start-paid-session", (req, res) => {
       });
     }
 
-    applyToAllCallerRecords(phone, {
+    await applyToAllCallerRecords(phone, {
       paidSessionAgentId: agentId,
       paidSessionRequestedAt: new Date().toISOString()
     });
@@ -927,7 +927,7 @@ app.post("/elevenlabs/start-paid-session", (req, res) => {
 // =====================================================================
 
 // 7. start_session_timer
-app.post("/elevenlabs/start-session-timer", (req, res) => {
+app.post("/elevenlabs/start-session-timer", async (req, res) => {
   try {
     console.log("ELEVENLABS START SESSION TIMER REQUEST:", req.body);
 
@@ -947,7 +947,7 @@ app.post("/elevenlabs/start-session-timer", (req, res) => {
       });
     }
 
-    const paid = findPaidCallerRecord(phone);
+    const paid = await findPaidCallerRecord(phone);
 
     if (!paid) {
       return res.json({
@@ -963,7 +963,7 @@ app.post("/elevenlabs/start-session-timer", (req, res) => {
     // caller context. This is how the paid agent learns which persona to run
     // (sessionType) and which language to speak, with the backend as the
     // single source of truth instead of relying on transfer variables.
-    const records = getAllCallerRecords(phone);
+    const records = await getAllCallerRecords(phone);
     const sessionContext = {
       callerName:
         pickFirstDefined(records, "callerName") ||
@@ -993,7 +993,7 @@ app.post("/elevenlabs/start-session-timer", (req, res) => {
 
     const startedAtIso = new Date().toISOString();
 
-    applyToAllCallerRecords(phone, {
+    await applyToAllCallerRecords(phone, {
       timerStarted: true,
       sessionStartedAt: startedAtIso,
       sessionSeconds,
@@ -1029,7 +1029,7 @@ app.post("/elevenlabs/start-session-timer", (req, res) => {
 });
 
 // 8. check_session_time
-app.post("/elevenlabs/check-session-time", (req, res) => {
+app.post("/elevenlabs/check-session-time", async (req, res) => {
   try {
     console.log("ELEVENLABS CHECK SESSION TIME REQUEST:", req.body);
 
@@ -1049,7 +1049,7 @@ app.post("/elevenlabs/check-session-time", (req, res) => {
       });
     }
 
-    const paid = findPaidCallerRecord(phone);
+    const paid = await findPaidCallerRecord(phone);
 
     if (!paid) {
       return res.json({
@@ -1119,7 +1119,7 @@ app.post("/elevenlabs/check-session-time", (req, res) => {
 // This does NOT send an SMS. It marks the warning as given so the agent
 // only says it once, and returns shouldWarn telling the agent whether to
 // speak the warning now.
-app.post("/elevenlabs/send-two-minute-warning", (req, res) => {
+app.post("/elevenlabs/send-two-minute-warning", async (req, res) => {
   try {
     console.log("ELEVENLABS TWO MINUTE WARNING REQUEST:", req.body);
 
@@ -1139,7 +1139,7 @@ app.post("/elevenlabs/send-two-minute-warning", (req, res) => {
       });
     }
 
-    const paid = findPaidCallerRecord(phone);
+    const paid = await findPaidCallerRecord(phone);
 
     if (!paid) {
       return res.json({
@@ -1159,7 +1159,7 @@ app.post("/elevenlabs/send-two-minute-warning", (req, res) => {
       });
     }
 
-    applyToAllCallerRecords(phone, {
+    await applyToAllCallerRecords(phone, {
       twoMinuteWarningSent: true,
       twoMinuteWarningSentAt: new Date().toISOString()
     });
@@ -1184,7 +1184,7 @@ app.post("/elevenlabs/send-two-minute-warning", (req, res) => {
 });
 
 // 10. end_session
-app.post("/elevenlabs/end-session", (req, res) => {
+app.post("/elevenlabs/end-session", async (req, res) => {
   try {
     console.log("ELEVENLABS END SESSION REQUEST:", req.body);
 
@@ -1204,7 +1204,7 @@ app.post("/elevenlabs/end-session", (req, res) => {
       });
     }
 
-    const paid = findPaidCallerRecord(phone);
+    const paid = await findPaidCallerRecord(phone);
 
     if (!paid) {
       return res.json({
@@ -1222,7 +1222,7 @@ app.post("/elevenlabs/end-session", (req, res) => {
       });
     }
 
-    applyToAllCallerRecords(phone, {
+    await applyToAllCallerRecords(phone, {
       sessionComplete: true,
       completedAt: new Date().toISOString(),
       completedReason: req.body.reason || "agent_ended"
@@ -1277,45 +1277,22 @@ app.post("/send-survey-sms", async (req, res) => {
 
     const phone = normalizePhone(rawPhone);
 
-    const callId = pickRealValue(
-      req.body.call_id,
-      req.body.callId,
-      req.body.ai_call_id
-    );
-
-    let payment =
-      (phone && payments.get(phone)) ||
-      (callId && payments.get(callId)) ||
-      [...payments.values()].find((p) => {
-        return (
-          p &&
-          p.paid === true &&
-          (
-            normalizePhone(p.customerPhone) === phone ||
-            normalizePhone(p.phone) === phone ||
-            normalizePhone(p.callerPhone) === phone ||
-            p.callId === callId ||
-            p.aiCallId === callId
-          )
-        );
-      });
-
-    if (!payment) {
-      payment = findMostRecentFallbackPayment() || findMostRecentActivePaidPayment();
+    let payment = null;
+    if (phone) {
+      const records = await getAllCallerRecords(phone);
+      payment = records[0] || null;
     }
 
-    const toPhone = normalizePhone(
-      payment?.customerPhone ||
-      payment?.phone ||
-      payment?.callerPhone ||
-      phone
-    );
+    if (!payment) {
+      payment = await findMostRecentPaidRecord();
+    }
+
+    const toPhone = normalizePhone(payment?.phone || phone);
 
     if (!toPhone || isTemplateValue(toPhone)) {
       console.log("SURVEY SMS SKIPPED - NO REAL PHONE:", {
         rawPhone,
         phone,
-        callId,
         foundPayment: !!payment
       });
 
@@ -1328,8 +1305,7 @@ app.post("/send-survey-sms", async (req, res) => {
 
     if (payment?.surveySmsSent === true) {
       console.log("SURVEY SMS SKIPPED - ALREADY SENT:", {
-        toPhone,
-        customerPhone: payment.customerPhone
+        toPhone
       });
 
       return res.json({
@@ -1351,25 +1327,17 @@ app.post("/send-survey-sms", async (req, res) => {
       body: surveyText
     });
 
-    if (payment) {
-      payment.surveySmsSent = true;
-      payment.surveySmsSentAt = new Date().toISOString();
-
-      payment.surveyReminderSent = true;
-      payment.surveyDue = false;
-
-      payment.surveySmsSid = msg.sid;
-
-      payment.completedReason = payment.completedReason || "survey_sent";
-
-      payment.updatedAt = new Date().toISOString();
-    }
+    await applyToAllCallerRecords(toPhone, {
+      surveySmsSent: true,
+      surveySmsSentAt: new Date().toISOString(),
+      surveySmsSid: msg.sid,
+      completedReason: payment?.completedReason || "survey_sent"
+    });
 
     console.log("SURVEY SMS SENT:", {
       to: toPhone,
       sid: msg.sid,
-      surveySmsSent: true,
-      surveyReminderSent: true
+      surveySmsSent: true
     });
 
     return res.json({
