@@ -1076,8 +1076,16 @@ app.post("/elevenlabs/check-session-time", (req, res) => {
     const startedAt = new Date(paid.sessionStartedAt).getTime();
     const elapsed = Math.floor((Date.now() - startedAt) / 1000);
     const secondsRemaining = Math.max(0, sessionSeconds - elapsed);
-    const expired = secondsRemaining <= 0;
+
+    // Once the session is already marked complete, the closing and the two
+    // minute warning have already happened. Force both flags to false so the
+    // agent can never be told to close or warn a second time, no matter how
+    // many times it polls. This makes a doubled ending impossible.
+    const alreadyComplete = paid.sessionComplete === true;
+
+    const expired = !alreadyComplete && secondsRemaining <= 0;
     const twoMinuteWarningDue =
+      !alreadyComplete &&
       secondsRemaining > 0 &&
       secondsRemaining <= 120 &&
       paid.twoMinuteWarningSent !== true;
@@ -1093,7 +1101,7 @@ app.post("/elevenlabs/check-session-time", (req, res) => {
       expired,
       twoMinuteWarningDue,
       twoMinuteWarningSent: paid.twoMinuteWarningSent === true,
-      sessionComplete: paid.sessionComplete === true,
+      sessionComplete: alreadyComplete,
       message: expired ? "Session time is up." : "Session time remaining."
     });
   } catch (error) {
