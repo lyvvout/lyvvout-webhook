@@ -67,6 +67,8 @@ const FIELD_MAP = {
   surveySmsSentAt: "survey_sms_sent_at",
   surveySmsSid: "survey_sms_sid",
   stripeSessionId: "stripe_session_id",
+  stripeCustomerId: "stripe_customer_id",
+  stripePaymentMethodId: "stripe_payment_method_id",
   amountTotal: "amount_total",
   currency: "currency",
   paymentStatus: "payment_status",
@@ -123,6 +125,8 @@ function toRecord(row) {
     surveySmsSentAt: row.survey_sms_sent_at,
     surveySmsSid: row.survey_sms_sid,
     stripeSessionId: row.stripe_session_id,
+    stripeCustomerId: row.stripe_customer_id,
+    stripePaymentMethodId: row.stripe_payment_method_id,
     amountTotal: row.amount_total,
     currency: row.currency,
     paymentStatus: row.payment_status,
@@ -362,9 +366,34 @@ app.post(
           Number(session.metadata?.seconds) ||
           (session.amount_total === 1499 ? 900 : 900);
 
+        // NEW: capture the Stripe Customer ID (sits right on the session)
+        // and the saved card's Payment Method ID (lives on the PaymentIntent,
+        // so we need one extra read-only lookup to fetch it). This is what
+        // lets us charge the card again later for the mid-call upsell,
+        // without the caller re-entering payment info.
+        let stripeCustomerId = session.customer || null;
+        let stripePaymentMethodId = null;
+
+        if (session.payment_intent) {
+          try {
+            const paymentIntent = await stripe.paymentIntents.retrieve(
+              session.payment_intent,
+              { expand: ["payment_method"] }
+            );
+            stripePaymentMethodId = paymentIntent.payment_method?.id || null;
+          } catch (piErr) {
+            console.error(
+              "STRIPE WEBHOOK - COULD NOT RETRIEVE PAYMENT INTENT:",
+              piErr.message
+            );
+          }
+        }
+
         const updates = {
           paid: true,
           stripeSessionId: session.id,
+          stripeCustomerId,
+          stripePaymentMethodId,
           customerEmail: session.customer_details?.email || null,
           amountTotal: session.amount_total,
           currency: session.currency,
@@ -388,7 +417,9 @@ app.post(
             phone,
             callerName: record?.callerName,
             language: record?.language,
-            amount: session.amount_total
+            amount: session.amount_total,
+            stripeCustomerId,
+            stripePaymentMethodId
           });
         } else {
           // Payment succeeded but Stripe returned no phone to match on. The
@@ -503,6 +534,8 @@ app.post("/elevenlabs/save-intake-info", async (req, res) => {
       surveySmsSentAt: null,
       surveySmsSid: null,
       stripeSessionId: null,
+      stripeCustomerId: null,
+      stripePaymentMethodId: null,
       amountTotal: null,
       currency: null,
       paymentStatus: null,
