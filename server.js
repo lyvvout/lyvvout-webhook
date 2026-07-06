@@ -389,6 +389,33 @@ app.post(
           }
         }
 
+        // FALLBACK: this Payment Link checkout does not automatically create
+        // a Stripe Customer object even with "save payment details" checked.
+        // Without a Customer, off-session charges (the upsell) are less
+        // reliable. If we captured a payment method but got no customer, we
+        // create one ourselves and attach the saved card to it. This is a
+        // normal Stripe API call, invisible to the caller, no new page or
+        // link involved.
+        if (!stripeCustomerId && stripePaymentMethodId) {
+          try {
+            const customer = await stripe.customers.create({
+              email: session.customer_details?.email || undefined,
+              phone: phone || undefined,
+              name: session.customer_details?.name || undefined,
+              payment_method: stripePaymentMethodId,
+              invoice_settings: {
+                default_payment_method: stripePaymentMethodId
+              }
+            });
+            stripeCustomerId = customer.id;
+          } catch (custErr) {
+            console.error(
+              "STRIPE WEBHOOK - COULD NOT CREATE FALLBACK CUSTOMER:",
+              custErr.message
+            );
+          }
+        }
+
         const updates = {
           paid: true,
           stripeSessionId: session.id,
