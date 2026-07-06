@@ -73,6 +73,8 @@ const FIELD_MAP = {
   upsellAmount: "upsell_amount",
   upsellChargedAt: "upsell_charged_at",
   upsellStripeChargeId: "upsell_stripe_charge_id",
+  upsellOffered: "upsell_offered",
+  upsellOfferedAt: "upsell_offered_at",
   amountTotal: "amount_total",
   currency: "currency",
   paymentStatus: "payment_status",
@@ -135,6 +137,8 @@ function toRecord(row) {
     upsellAmount: row.upsell_amount,
     upsellChargedAt: row.upsell_charged_at,
     upsellStripeChargeId: row.upsell_stripe_charge_id,
+    upsellOffered: row.upsell_offered === true,
+    upsellOfferedAt: row.upsell_offered_at,
     amountTotal: row.amount_total,
     currency: row.currency,
     paymentStatus: row.payment_status,
@@ -1205,6 +1209,16 @@ app.post("/elevenlabs/check-session-time", async (req, res) => {
       secondsRemaining <= 120 &&
       paid.twoMinuteWarningSent !== true;
 
+    // Upsell offer triggers once, at the 5-minute mark, and only if it has
+    // never been offered before (regardless of accepted/declined outcome)
+    // and no extension has already been purchased this call.
+    const upsellOfferDue =
+      !alreadyComplete &&
+      secondsRemaining > 0 &&
+      secondsRemaining <= 300 &&
+      paid.upsellOffered !== true &&
+      paid.upsellCharged !== true;
+
     return res.json({
       ok: true,
       timerStarted: true,
@@ -1216,6 +1230,9 @@ app.post("/elevenlabs/check-session-time", async (req, res) => {
       expired,
       twoMinuteWarningDue,
       twoMinuteWarningSent: paid.twoMinuteWarningSent === true,
+      upsellOfferDue,
+      upsellOffered: paid.upsellOffered === true,
+      upsellCharged: paid.upsellCharged === true,
       sessionComplete: alreadyComplete,
       message: expired ? "Session time is up." : "Session time remaining."
     });
@@ -1225,6 +1242,71 @@ app.post("/elevenlabs/check-session-time", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "Failed to check session time.",
+      details: error.message
+    });
+  }
+});
+
+// 8a. mark_upsell_offered
+// Called by the agent the moment it brings up the extension offer, BEFORE
+// hearing the caller's answer. This guarantees the offer is locked to
+// happen exactly once per call, no matter what the caller says or if the
+// call drops mid-question.
+app.post("/elevenlabs/mark-upsell-offered", async (req, res) => {
+  try {
+    console.log("ELEVENLABS MARK UPSELL OFFERED REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = await findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        message: "Payment not confirmed."
+      });
+    }
+
+    if (paid.upsellOffered === true) {
+      return res.json({
+        ok: true,
+        alreadyMarked: true,
+        message: "Upsell was already marked as offered."
+      });
+    }
+
+    await applyToAllCallerRecords(phone, {
+      upsellOffered: true,
+      upsellOfferedAt: new Date().toISOString()
+    });
+
+    console.log("ELEVENLABS UPSELL OFFERED MARKED:", { phone });
+
+    return res.json({
+      ok: true,
+      message: "Upsell offer marked. Will not be offered again this session."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS MARK UPSELL OFFERED ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to mark upsell as offered.",
       details: error.message
     });
   }
@@ -1336,6 +1418,7 @@ app.post("/elevenlabs/charge-upsell", async (req, res) => {
       upsellAmount: UPSELL_AMOUNT_CENTS,
       upsellChargedAt: new Date().toISOString(),
       upsellStripeChargeId: paymentIntent.latest_charge || paymentIntent.id,
+      upsellOffered: true,
       sessionSeconds: newSessionSeconds,
       totalSessionSeconds: newSessionSeconds,
       twoMinuteWarningSent: false,
