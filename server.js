@@ -498,6 +498,53 @@ app.get("/health", (req, res) => {
 });
 
 // =====================================================================
+// /pay — REPLACES THE STATIC STRIPE PAYMENT LINK
+// The Payment Link (buy.stripe.com/...) could not reliably create a real
+// Stripe Customer even with "save payment details" checked, which meant
+// the saved card could not be safely charged again later (confirmed by
+// testing: stripeCustomerId kept coming back null). This endpoint creates
+// the checkout the correct way — customer_creation: "always" forces
+// Stripe to create a real Customer and attach the card to it. The caller
+// experience is unchanged: clicking the site button lands them on this
+// URL, which immediately forwards them to a normal Stripe-hosted payment
+// page, same as before.
+// =====================================================================
+app.get("/pay", async (req, res) => {
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      customer_creation: "always",
+      phone_number_collection: { enabled: true },
+      allow_promotion_codes: true,
+      payment_intent_data: {
+        setup_future_usage: "off_session"
+      },
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: "LyvvOut Quick Break: 15 Minutes"
+            },
+            unit_amount: 1999
+          },
+          quantity: 1
+        }
+      ],
+      success_url: "https://lyvvout.com/#payment",
+      cancel_url: "https://lyvvout.com/#payment"
+    });
+
+    return res.redirect(303, session.url);
+  } catch (error) {
+    console.error("CREATE CHECKOUT SESSION ERROR:", error.message);
+    return res
+      .status(500)
+      .send("Something went wrong loading the payment page. Please try again.");
+  }
+});
+
+// =====================================================================
 // PHASE 1 — INTAKE + PAYMENT
 // =====================================================================
 
