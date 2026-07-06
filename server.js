@@ -69,6 +69,10 @@ const FIELD_MAP = {
   stripeSessionId: "stripe_session_id",
   stripeCustomerId: "stripe_customer_id",
   stripePaymentMethodId: "stripe_payment_method_id",
+  upsellCharged: "upsell_charged",
+  upsellAmount: "upsell_amount",
+  upsellChargedAt: "upsell_charged_at",
+  upsellStripeChargeId: "upsell_stripe_charge_id",
   amountTotal: "amount_total",
   currency: "currency",
   paymentStatus: "payment_status",
@@ -127,6 +131,10 @@ function toRecord(row) {
     stripeSessionId: row.stripe_session_id,
     stripeCustomerId: row.stripe_customer_id,
     stripePaymentMethodId: row.stripe_payment_method_id,
+    upsellCharged: row.upsell_charged === true,
+    upsellAmount: row.upsell_amount,
+    upsellChargedAt: row.upsell_charged_at,
+    upsellStripeChargeId: row.upsell_stripe_charge_id,
     amountTotal: row.amount_total,
     currency: row.currency,
     paymentStatus: row.payment_status,
@@ -1217,6 +1225,144 @@ app.post("/elevenlabs/check-session-time", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "Failed to check session time.",
+      details: error.message
+    });
+  }
+});
+
+// 8b. charge_upsell
+// Charges the caller's saved card for the mid-call extension (10 minutes,
+// $9.99) and, if successful, extends the timer and resets the two-minute
+// warning and session-complete flags so the normal ending flow (warning,
+// closing, survey) runs again cleanly for the new, longer session.
+//
+// This can only work for callers who have a saved stripeCustomerId AND
+// stripePaymentMethodId — meaning callers who paid $0 via a 100% discount
+// code will not have a saved card, so this will correctly report the
+// upsell as unavailable for them rather than attempting a charge.
+const UPSELL_AMOUNT_CENTS = 999; // $9.99
+const UPSELL_EXTRA_SECONDS = 600; // 10 minutes
+
+app.post("/elevenlabs/charge-upsell", async (req, res) => {
+  try {
+    console.log("ELEVENLABS CHARGE UPSELL REQUEST:", req.body);
+
+    const rawPhone =
+      req.body.phone_number ||
+      req.body.phone ||
+      req.body.customerPhone ||
+      req.body.callerPhone ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing phone number."
+      });
+    }
+
+    const paid = await findPaidCallerRecord(phone);
+
+    if (!paid) {
+      return res.json({
+        ok: false,
+        paid: false,
+        available: false,
+        message: "Payment not confirmed. Cannot offer extension."
+      });
+    }
+
+    // Already charged this session — do not charge a second time. This is
+    // a simple one-extension-per-call limit for now.
+    if (paid.upsellCharged === true) {
+      return res.json({
+        ok: true,
+        alreadyCharged: true,
+        available: false,
+        message: "An extension has already been purchased this session."
+      });
+    }
+
+    // No saved card (e.g. caller used a free/discount code) — the upsell
+    // cannot be offered to this caller.
+    if (!paid.stripeCustomerId || !paid.stripePaymentMethodId) {
+      return res.json({
+        ok: true,
+        available: false,
+        charged: false,
+        message: "No saved payment method on file. Cannot offer extension."
+      });
+    }
+
+    let paymentIntent;
+
+    try {
+      paymentIntent = await stripe.paymentIntents.create({
+        amount: UPSELL_AMOUNT_CENTS,
+        currency: "usd",
+        customer: paid.stripeCustomerId,
+        payment_method: paid.stripePaymentMethodId,
+        off_session: true,
+        confirm: true
+      });
+    } catch (chargeErr) {
+      // Card declined, expired, or any other Stripe-side failure. This is
+      // an expected outcome, not a server error, so we still return 200
+      // with charged: false and a reason the agent can act on.
+      console.error("CHARGE UPSELL - STRIPE DECLINED OR FAILED:", {
+        phone,
+        error: chargeErr.message,
+        code: chargeErr.code || null
+      });
+
+      return res.json({
+        ok: true,
+        available: true,
+        charged: false,
+        declined: true,
+        message:
+          "The card on file could not be charged for the extension. Continue the session as normal."
+      });
+    }
+
+    const newSessionSeconds =
+      (paid.sessionSeconds || paid.totalSessionSeconds || 900) +
+      UPSELL_EXTRA_SECONDS;
+
+    await applyToAllCallerRecords(phone, {
+      upsellCharged: true,
+      upsellAmount: UPSELL_AMOUNT_CENTS,
+      upsellChargedAt: new Date().toISOString(),
+      upsellStripeChargeId: paymentIntent.latest_charge || paymentIntent.id,
+      sessionSeconds: newSessionSeconds,
+      totalSessionSeconds: newSessionSeconds,
+      twoMinuteWarningSent: false,
+      sessionComplete: false
+    });
+
+    console.log("CHARGE UPSELL SUCCESS:", {
+      phone,
+      amount: UPSELL_AMOUNT_CENTS,
+      newSessionSeconds,
+      paymentIntentId: paymentIntent.id
+    });
+
+    return res.json({
+      ok: true,
+      available: true,
+      charged: true,
+      newSessionSeconds,
+      addedMinutes: Math.round(UPSELL_EXTRA_SECONDS / 60),
+      message: "Extension charged successfully. Session time extended."
+    });
+  } catch (error) {
+    console.error("ELEVENLABS CHARGE UPSELL ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to process extension charge.",
       details: error.message
     });
   }
