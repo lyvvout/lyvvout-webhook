@@ -531,7 +531,7 @@ app.get("/pay", async (req, res) => {
           quantity: 1
         }
       ],
-      success_url: "https://lyvvout.com/#payment",
+      success_url: "https://lyvvout.com/#thanks",
       cancel_url: "https://lyvvout.com/#payment"
     });
 
