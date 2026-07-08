@@ -1693,7 +1693,7 @@ app.post("/send-survey-sms", async (req, res) => {
     }
 
     const surveyText =
-      "Thank you for using LyvvOut. Please take a quick moment to complete your session survey: https://lyvvout.com/#survey";
+      "Thank you for using LyvvOut. Please take a quick moment to complete your session survey: https://lyvvout.com/#survey Reply STOP to opt out. Reply HELP for help. Msg & data rates may apply.";
 
     const msg = await twilioClient.messages.create({
       to: toPhone,
