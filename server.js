@@ -1186,15 +1186,47 @@ app.post("/elevenlabs/check-session-time", async (req, res) => {
 
     const sessionSeconds = paid.sessionSeconds || paid.totalSessionSeconds || 900;
 
+    // SELF-HEALING: normally the agent calls start_session_timer as its
+    // very first action. But AI instruction-following isn't 100% reliable,
+    // and if that call gets skipped, the whole session timer/warning/
+    // upsell/ending chain silently never triggers. So if payment is
+    // confirmed but the timer somehow never started, start it right now,
+    // the first time this is checked, instead of just reporting "not
+    // started yet" forever.
     if (paid.timerStarted !== true || !paid.sessionStartedAt) {
+      const startedAtIso = new Date().toISOString();
+
+      await applyToAllCallerRecords(phone, {
+        timerStarted: true,
+        sessionStartedAt: startedAtIso,
+        sessionSeconds,
+        totalSessionSeconds: paid.totalSessionSeconds || sessionSeconds,
+        twoMinuteWarningSent: false,
+        sessionComplete: false
+      });
+
+      console.log("ELEVENLABS CHECK SESSION TIME - AUTO-STARTED TIMER (agent skipped start_session_timer):", {
+        phone,
+        startedAtIso,
+        sessionSeconds
+      });
+
       return res.json({
         ok: true,
-        timerStarted: false,
+        timerStarted: true,
+        sessionStartedAt: startedAtIso,
+        sessionSeconds,
+        elapsedSeconds: 0,
         secondsRemaining: sessionSeconds,
         minutesRemaining: Math.ceil(sessionSeconds / 60),
         expired: false,
         twoMinuteWarningDue: false,
-        message: "Timer has not started yet."
+        twoMinuteWarningSent: false,
+        upsellOfferDue: false,
+        upsellOffered: paid.upsellOffered === true,
+        upsellCharged: paid.upsellCharged === true,
+        sessionComplete: false,
+        message: "Session time remaining."
       });
     }
 
